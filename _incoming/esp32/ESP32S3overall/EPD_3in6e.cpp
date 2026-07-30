@@ -32,6 +32,9 @@
 #include "Debug.h"
 #include <time.h>
 
+static const unsigned long EPD_BUSY_TIMEOUT_MS = 45000;
+static bool EPD_3IN6E_DeviceReady = true;
+
 /******************************************************************************
 function :  Software reset
 parameter:
@@ -76,14 +79,26 @@ static void EPD_3IN6E_SendData(UBYTE Data)
 function :  Wait until the busy_pin goes LOW
 parameter:
 ******************************************************************************/
-static void EPD_3IN6E_ReadBusyH(void)
+static bool EPD_3IN6E_ReadBusyH(void)
 {
     Debug("e-Paper busy H\r\n");
+    unsigned long start = millis();
     while(!DEV_Digital_Read(EPD_BUSY_PIN)) {      //LOW: busy, HIGH: idle
+        if (millis() - start >= EPD_BUSY_TIMEOUT_MS) {
+            EPD_3IN6E_DeviceReady = false;
+            Serial.println("[EPD] BUSY timeout; skipping e-paper refresh");
+            return false;
+        }
         DEV_Delay_ms(10);
     }
     DEV_Delay_ms(100);
     Debug("e-Paper busy H release\r\n");
+    return true;
+}
+
+bool EPD_3IN6E_IsReady(void)
+{
+    return EPD_3IN6E_DeviceReady;
 }
 
 /******************************************************************************
@@ -92,9 +107,14 @@ parameter:
 ******************************************************************************/
 static void EPD_3IN6E_TurnOnDisplay(void)
 {
+    if (!EPD_3IN6E_DeviceReady) {
+        return;
+    }
 
     EPD_3IN6E_SendCommand(0x04); // POWER_ON
-    EPD_3IN6E_ReadBusyH();
+    if (!EPD_3IN6E_ReadBusyH()) {
+        return;
+    }
     DEV_Delay_ms(200);
 
 
@@ -111,11 +131,15 @@ static void EPD_3IN6E_TurnOnDisplay(void)
 
     EPD_3IN6E_SendCommand(0x12); // DISPLAY_REFRESH
     EPD_3IN6E_SendData(0x00);
-    EPD_3IN6E_ReadBusyH();
+    if (!EPD_3IN6E_ReadBusyH()) {
+        return;
+    }
 
     EPD_3IN6E_SendCommand(0x02); // POWER_OFF
     EPD_3IN6E_SendData(0X00);
-    EPD_3IN6E_ReadBusyH();
+    if (!EPD_3IN6E_ReadBusyH()) {
+        return;
+    }
 
     clock_gettime(CLOCK_REALTIME, &finish);
     long milliseconds = (finish.tv_sec - start.tv_sec) * 1000 +
@@ -129,8 +153,11 @@ parameter:
 ******************************************************************************/
 void EPD_3IN6E_Init(void)
 {
+    EPD_3IN6E_DeviceReady = true;
     EPD_3IN6E_Reset();
-    EPD_3IN6E_ReadBusyH();
+    if (!EPD_3IN6E_ReadBusyH()) {
+        return;
+    }
     DEV_Delay_ms(30);
 
 
@@ -200,7 +227,9 @@ void EPD_3IN6E_Init(void)
 
     EPD_3IN6E_SendCommand(0x84);
     EPD_3IN6E_SendData(0x01);
-    EPD_3IN6E_ReadBusyH();
+    if (!EPD_3IN6E_ReadBusyH()) {
+        return;
+    }
 }
 
 /******************************************************************************
@@ -209,6 +238,9 @@ parameter:
 ******************************************************************************/
 void EPD_3IN6E_Clear(UBYTE color)
 {
+    if (!EPD_3IN6E_DeviceReady) {
+        return;
+    }
     UWORD Width, Height;
     Width = (EPD_3IN6E_WIDTH % 2 == 0)? (EPD_3IN6E_WIDTH / 2 ): (EPD_3IN6E_WIDTH / 2 + 1);
     Height = EPD_3IN6E_HEIGHT;
@@ -229,6 +261,9 @@ parameter:
 ******************************************************************************/
 void EPD_3IN6E_Show7Block(void)
 {
+    if (!EPD_3IN6E_DeviceReady) {
+        return;
+    }
     unsigned long j, k;
     unsigned char const Color_seven[6] =
     {EPD_3IN6E_BLACK, EPD_3IN6E_YELLOW, EPD_3IN6E_RED, EPD_3IN6E_BLUE, EPD_3IN6E_GREEN, EPD_3IN6E_WHITE};
@@ -244,6 +279,9 @@ void EPD_3IN6E_Show7Block(void)
 
 void EPD_3IN6E_Show(void)
 {
+    if (!EPD_3IN6E_DeviceReady) {
+        return;
+    }
     unsigned long k,o;
     unsigned char const Color_seven[6] =
     {EPD_3IN6E_BLACK, EPD_3IN6E_YELLOW, EPD_3IN6E_RED, EPD_3IN6E_BLUE, EPD_3IN6E_GREEN, EPD_3IN6E_WHITE};
@@ -289,6 +327,9 @@ parameter:
 ******************************************************************************/
 void EPD_3IN6E_Display(const UBYTE *Image)
 {
+    if (!EPD_3IN6E_DeviceReady) {
+        return;
+    }
     UWORD Width, Height;
     Width = (EPD_3IN6E_WIDTH % 2 == 0)? (EPD_3IN6E_WIDTH / 2 ): (EPD_3IN6E_WIDTH / 2 + 1);
     Height = EPD_3IN6E_HEIGHT;
@@ -304,6 +345,9 @@ void EPD_3IN6E_Display(const UBYTE *Image)
 
 void EPD_3IN6E_DisplayPart(const UBYTE *Image, UWORD xstart, UWORD ystart, UWORD image_width, UWORD image_heigh)
 {
+    if (!EPD_3IN6E_DeviceReady) {
+        return;
+    }
     unsigned long i, j;
 	UWORD Width, Height;
 	Width = (EPD_3IN6E_WIDTH % 2 == 0)? (EPD_3IN6E_WIDTH / 2 ): (EPD_3IN6E_WIDTH / 2 + 1);
@@ -329,6 +373,9 @@ parameter:
 ******************************************************************************/
 void EPD_3IN6E_Sleep(void)
 {
+    if (!EPD_3IN6E_DeviceReady) {
+        return;
+    }
     EPD_3IN6E_SendCommand(0x07); // DEEP_SLEEP
     EPD_3IN6E_SendData(0XA5);
     // EPD_3IN6E_ReadBusyH();

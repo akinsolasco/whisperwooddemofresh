@@ -48,6 +48,7 @@ Color Index
 #define EPD_3IN6E_GREEN   0x6   /// 110
 
 void EPD_3IN6E_Init(void);
+bool EPD_3IN6E_IsReady(void);
 void EPD_3IN6E_Clear(UBYTE color);
 void EPD_3IN6E_Show7Block(void);
 void EPD_3IN6E_Show(void);

@@ -621,9 +621,31 @@ static void displayFromData(const DisplayData& d) {
   stage("epaper: start");
   printHeap("before epaper");
 
-  EPD_3IN6E_Init();
-  EPD_3IN6E_Clear(EPD_3IN6E_WHITE);
+  if (gLcdImageStored) {
+    releaseLcdImageBuffer();
+  }
 
+  stage("epaper: init");
+  EPD_3IN6E_Init();
+  if (!EPD_3IN6E_IsReady()) {
+    stage("epaper: skipped busy timeout");
+    return;
+  }
+
+  const uint32_t bufBytes = ((uint32_t)DISPLAY_WIDTH * (uint32_t)DISPLAY_HEIGHT) / 2;
+  if (!ImageBuffer) {
+    ImageBuffer = (UBYTE*)heap_caps_malloc(bufBytes, MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
+  }
+  if (!ImageBuffer) {
+    Serial.printf("[EPD] framebuffer alloc failed; need=%u free=%u max=%u\n",
+                  (unsigned)bufBytes,
+                  (unsigned)ESP.getFreeHeap(),
+                  (unsigned)ESP.getMaxAllocHeap());
+    return;
+  }
+
+  stage("epaper: render");
+  Paint_NewImage(ImageBuffer, DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, EPD_3IN6E_WHITE);
   Paint_SelectImage(ImageBuffer);
   Paint_Clear(EPD_3IN6E_WHITE);
   Paint_SetScale(6);
@@ -649,10 +671,15 @@ static void displayFromData(const DisplayData& d) {
 
   stage("epaper: display");
   EPD_3IN6E_Display(ImageBuffer);
-  EPD_3IN6E_Sleep();
+  if (EPD_3IN6E_IsReady()) {
+    EPD_3IN6E_Sleep();
+  } else {
+    stage("epaper: display busy timeout");
+  }
 
   stage("epaper: done");
   printHeap("after epaper");
+  releaseEpaperBuffer();
   delay(200);
 }
 
@@ -678,13 +705,38 @@ static void setLcdPower(bool on) {
   digitalWrite(LCD_BL_PIN, on ? HIGH : LOW);
 }
 
+static void releaseLcdImageBuffer() {
+  if (lcdImageBuf) {
+    free(lcdImageBuf);
+    lcdImageBuf = nullptr;
+    Serial.println("[LCD] image buffer released");
+  }
+}
+
+static void releaseEpaperBuffer() {
+  if (ImageBuffer) {
+    free(ImageBuffer);
+    ImageBuffer = nullptr;
+    Serial.println("[EPD] framebuffer released");
+  }
+}
+
 static bool ensureLcdImageBuffer() {
   if (lcdImageBuf) return true;
-  lcdImageBuf = (uint16_t*)ps_malloc(LCD_IMG_BYTES);
+  lcdImageBuf = (uint16_t*)heap_caps_malloc(LCD_IMG_BYTES, MALLOC_CAP_SPIRAM | MALLOC_CAP_8BIT);
+  if (lcdImageBuf) {
+    Serial.println("[LCD] image buffer allocated in PSRAM");
+    return true;
+  }
+  lcdImageBuf = (uint16_t*)heap_caps_malloc(LCD_IMG_BYTES, MALLOC_CAP_8BIT);
   if (!lcdImageBuf) {
-    Serial.println("[LCD] PSRAM image buffer allocation failed");
+    Serial.printf("[LCD] image buffer allocation failed; need=%u free=%u max=%u\n",
+                  (unsigned)LCD_IMG_BYTES,
+                  (unsigned)ESP.getFreeHeap(),
+                  (unsigned)ESP.getMaxAllocHeap());
     return false;
   }
+  Serial.println("[LCD] image buffer allocated in internal RAM");
   return true;
 }
 
@@ -838,6 +890,9 @@ static void handleImageLine(const char* line) {
   if (lcdPowerOn) {
     displayLCDImage565(lcdImageBuf);
   }
+  if (persisted) {
+    releaseLcdImageBuffer();
+  }
   char ack[128];
   snprintf(ack, sizeof(ack), "ACKIMG seq=%ld ok=1 persisted=%d\n", seq, persisted ? 1 : 0);
   sendRawToPi(ack);
@@ -866,6 +921,7 @@ static void handleLcdLine(const char* line) {
   decodeUnderscore(cmdBuf);
 
   if (strEqNoCase(cmdBuf, "on")) {
+    bool hasStoredImage = gLcdImageStored || lcdImageBuf;
     setLcdPower(true);
     if (!lcdImageBuf && gLcdImageStored) {
       loadLcdImageFromFlash();
@@ -875,8 +931,11 @@ static void handleLcdLine(const char* line) {
     } else {
       showLCDPlaceholder();
     }
+    if (gLcdImageStored) {
+      releaseLcdImageBuffer();
+    }
     char ack[96];
-    snprintf(ack, sizeof(ack), "ACKLCD seq=%ld ok=1 state=on lcd_image=%d\n", seq, lcdImageBuf ? 1 : 0);
+    snprintf(ack, sizeof(ack), "ACKLCD seq=%ld ok=1 state=on lcd_image=%d\n", seq, hasStoredImage ? 1 : 0);
     sendRawToPi(ack);
     return;
   }
@@ -1166,6 +1225,7 @@ static bool waitForWiFi(uint32_t maxWaitMs) {
   Serial.print("Hostname: ");
   Serial.println(WiFi.getHostname());
   stage("wifi: connected");
+  return true;
 }
 
 static bool connectToPi() {
@@ -1374,6 +1434,9 @@ void setup() {
   initPersistentFileSystem();
   if (loadLcdImageFromFlash()) {
     displayLCDImage565(lcdImageBuf);
+    if (gLcdImageStored) {
+      releaseLcdImageBuffer();
+    }
   } else {
     showLCDPlaceholder();
   }
@@ -1386,16 +1449,6 @@ void setup() {
   Serial.print("Framebuffer bytes (scale=6): ");
   Serial.println(bufBytes);
 
-  ImageBuffer = (UBYTE*)heap_caps_malloc(bufBytes, MALLOC_CAP_DMA | MALLOC_CAP_8BIT);
-  if (!ImageBuffer) {
-    Serial.println("ERROR: DMA framebuffer alloc failed.");
-    while (1) delay(1000);
-  }
-
-  stage("setup: Paint_NewImage");
-  Paint_NewImage(ImageBuffer, DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, EPD_3IN6E_WHITE);
-  Paint_SetScale(6);
-
   stage("setup: load saved or sample");
   if (!loadStateFromFlash()) {
     Serial.println("[FLASH] no saved state, using sample");
@@ -1405,14 +1458,14 @@ void setup() {
     Serial.println("[FLASH] loaded saved state");
   }
 
-  stage("setup: first epaper display");
-  displayFromData(gData);
-
   stage("setup: connectWiFi");
   waitForWiFi(30000);
 
   stage("setup: connectToPi");
   connectToPi();
+
+  stage("setup: first epaper display");
+  displayFromData(gData);
 
   stage("setup: done");
   Serial.println("Waiting for updates...");

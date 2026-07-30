@@ -4042,7 +4042,8 @@ class DashboardWindow(QWidget):
             self.control_device_summary["online"].setText(str(len(devices) - offline))
             self.control_device_summary["offline"].setText(str(offline))
             self.control_device_summary["low_battery"].setText(str(low_battery))
-            self.control_device_summary["firmware"].setText("Pending")
+            versions = sorted({str(d.get("fw") or d.get("firmware") or "").strip() for d in devices if str(d.get("fw") or d.get("firmware") or "").strip()})
+            self.control_device_summary["firmware"].setText(", ".join(versions) if versions else "Not reported")
 
         self.it_device_table.setRowCount(len(devices))
         for r, d in enumerate(devices):
