@@ -14,7 +14,7 @@ from PyQt6.QtWidgets import (
     QComboBox, QCheckBox, QListWidget, QListWidgetItem, QMessageBox,
     QFileDialog, QStackedWidget, QTableWidget, QTableWidgetItem, QHeaderView,
     QDialog, QHBoxLayout, QTimeEdit, QAbstractSpinBox, QScrollArea, QStyle, QMenu,
-    QInputDialog
+    QInputDialog, QApplication
 )
 
 from config import APP_NAME, DEFAULT_PI_BASE_URL, ASSETS_DIR, ROLE_LABELS, APP_DATA_DIR
@@ -2095,7 +2095,7 @@ class DashboardWindow(QWidget):
         host_label.setStyleSheet(self.label_style())
         self.esp32_pi_host = QLineEdit(wifi_panel)
         self.esp32_pi_host.setGeometry(514, 184, 180, 40)
-        self.esp32_pi_host.setPlaceholderText("192.168.2.37")
+        self.esp32_pi_host.setPlaceholderText("172.20.0.240")
         self.esp32_pi_host.setStyleSheet(self.input_style())
 
         port2_label = QLabel("TCP Port", wifi_panel)
@@ -4065,13 +4065,13 @@ class DashboardWindow(QWidget):
     def refresh_esp32_serial_ports(self):
         if not hasattr(self, "esp32_serial_port"):
             return
+        self.set_esp32_wifi_status("Refreshing USB serial ports...", "pending")
         current = self.esp32_serial_port.currentData()
         self.esp32_serial_port.clear()
         try:
             from serial.tools import list_ports
         except Exception:
-            self.esp32_wifi_status.setText("pyserial is not installed. Install/update the desktop app.")
-            self.esp32_wifi_status.setStyleSheet("font-size: 12px; color: #b91c1c; font-weight: 800;")
+            self.set_esp32_wifi_status("pyserial is not installed. Install/update the desktop app.", "error")
             return
         ports = list(list_ports.comports())
         for port in ports:
@@ -4083,8 +4083,31 @@ class DashboardWindow(QWidget):
                     self.esp32_serial_port.setCurrentIndex(idx)
                     break
         count = self.esp32_serial_port.count()
-        self.esp32_wifi_status.setText(f"{count} USB serial port(s) found." if count else "No USB serial ports found.")
-        self.esp32_wifi_status.setStyleSheet("font-size: 12px; color: #047857; font-weight: 800;" if count else "font-size: 12px; color: #b91c1c; font-weight: 800;")
+        self.set_esp32_wifi_status(
+            f"{count} USB serial port(s) found." if count else "No USB serial ports found.",
+            "ok" if count else "error",
+        )
+
+    def set_esp32_wifi_status(self, message, state="info"):
+        if not hasattr(self, "esp32_wifi_status"):
+            return
+        colors = {
+            "ok": "#047857",
+            "error": "#b91c1c",
+            "pending": "#b45309",
+            "info": "#475569",
+        }
+        color = colors.get(state, colors["info"])
+        self.esp32_wifi_status.setText(message)
+        self.esp32_wifi_status.setStyleSheet(f"font-size: 12px; color: {color}; font-weight: 800;")
+        QApplication.processEvents()
+
+    def set_esp32_provisioning_busy(self, busy):
+        for name in ("btn_refresh_esp32_ports", "btn_scan_esp32_wifi", "btn_apply_esp32_wifi"):
+            button = getattr(self, name, None)
+            if button:
+                button.setEnabled(not busy)
+        QApplication.processEvents()
 
     def _open_esp32_serial(self):
         port = self.esp32_serial_port.currentData() if hasattr(self, "esp32_serial_port") else None
@@ -4094,7 +4117,46 @@ class DashboardWindow(QWidget):
             import serial
         except Exception as exc:
             raise RuntimeError("pyserial is not installed. Install/update the desktop app before provisioning ESP32 WiFi.") from exc
-        return serial.Serial(port=port, baudrate=115200, timeout=0.8, write_timeout=2)
+        ser = serial.Serial(port=port, baudrate=115200, timeout=0.45, write_timeout=4)
+        try:
+            ser.setDTR(False)
+            ser.setRTS(False)
+        except Exception:
+            pass
+        return ser
+
+    def _wait_for_esp32_usb_ready(self, ser, timeout_s=8):
+        lines = []
+        start = time.time()
+        while time.time() - start < timeout_s:
+            raw = ser.readline()
+            if not raw:
+                continue
+            line = raw.decode(errors="ignore").strip()
+            if not line:
+                continue
+            lines.append(line)
+            if line.startswith(("WWREADY", "WWCFG", "WWERR")):
+                break
+        return lines
+
+    def _write_esp32_command(self, ser, command):
+        data = command.encode("utf-8")
+        last_error = None
+        for _ in range(3):
+            try:
+                written = ser.write(data)
+                ser.flush()
+                if written == len(data):
+                    return
+                last_error = RuntimeError(f"Only wrote {written}/{len(data)} bytes to ESP32.")
+            except Exception as exc:
+                last_error = exc
+            time.sleep(1.2)
+        raise RuntimeError(
+            "Windows opened the USB serial port, but the ESP32 did not accept the command. "
+            "Flash the latest provisioning firmware or select the correct ESP32 COM port."
+        ) from last_error
 
     def _read_esp32_lines(self, ser, end_markers, timeout_s=12):
         lines = []
@@ -4112,16 +4174,23 @@ class DashboardWindow(QWidget):
                 break
         return lines
 
+    def _esp32_serial_transaction(self, command, end_markers, timeout_s=12, ready_timeout_s=8):
+        with self._open_esp32_serial() as ser:
+            boot_lines = self._wait_for_esp32_usb_ready(ser, timeout_s=ready_timeout_s)
+            ser.reset_input_buffer()
+            self._write_esp32_command(ser, command)
+            response_lines = self._read_esp32_lines(ser, end_markers, timeout_s=timeout_s)
+        return boot_lines + response_lines
+
     def _serial_value(self, value):
         from urllib.parse import quote
         return quote(str(value or "").strip(), safe="")
 
     def scan_esp32_wifi_networks(self):
+        self.set_esp32_provisioning_busy(True)
+        self.set_esp32_wifi_status("Scanning WiFi from ESP32 over USB... keep the board plugged in.", "pending")
         try:
-            with self._open_esp32_serial() as ser:
-                ser.reset_input_buffer()
-                ser.write(b"WWSCAN\n")
-                lines = self._read_esp32_lines(ser, ("WWEND", "WWERR"), timeout_s=18)
+            lines = self._esp32_serial_transaction("WWSCAN\n", ("WWEND", "WWERR"), timeout_s=22, ready_timeout_s=8)
             networks = []
             for line in lines:
                 if not line.startswith("WWSSID "):
@@ -4136,11 +4205,19 @@ class DashboardWindow(QWidget):
             self.esp32_wifi_ssid.clear()
             for ssid in networks:
                 self.esp32_wifi_ssid.addItem(ssid)
-            self.esp32_wifi_status.setText(f"Found {len(networks)} WiFi network(s)." if networks else "No WiFi networks returned by ESP32.")
-            self.esp32_wifi_status.setStyleSheet("font-size: 12px; color: #047857; font-weight: 800;" if networks else "font-size: 12px; color: #b91c1c; font-weight: 800;")
+            for idx in range(self.esp32_wifi_ssid.count()):
+                if self.esp32_wifi_ssid.itemText(idx).strip().lower() == "bell458":
+                    self.esp32_wifi_ssid.setCurrentIndex(idx)
+                    break
+            detail = " Last: " + lines[-1] if lines else ""
+            self.set_esp32_wifi_status(
+                f"Found {len(networks)} WiFi network(s).{detail}" if networks else "No WiFi networks returned by ESP32. Confirm the latest ESP32 firmware is flashed.",
+                "ok" if networks else "error",
+            )
         except Exception as exc:
-            self.esp32_wifi_status.setText(f"WiFi scan failed: {exc}")
-            self.esp32_wifi_status.setStyleSheet("font-size: 12px; color: #b91c1c; font-weight: 800;")
+            self.set_esp32_wifi_status(f"WiFi scan failed: {exc}", "error")
+        finally:
+            self.set_esp32_provisioning_busy(False)
 
     def provision_esp32_wifi(self):
         ssid = self.esp32_wifi_ssid.currentText().strip() if hasattr(self, "esp32_wifi_ssid") else ""
@@ -4166,25 +4243,23 @@ class DashboardWindow(QWidget):
             f"pi={self._serial_value(pi_host)} "
             f"port={port_num}\n"
         )
+        self.set_esp32_provisioning_busy(True)
+        self.set_esp32_wifi_status(f"Saving WiFi '{ssid}' to ESP32 and waiting for acknowledgement...", "pending")
         try:
-            with self._open_esp32_serial() as ser:
-                ser.reset_input_buffer()
-                ser.write(command.encode("utf-8"))
-                lines = self._read_esp32_lines(ser, ("WWOK", "WWERR"), timeout_s=10)
+            lines = self._esp32_serial_transaction(command, ("WWOK", "WWERR"), timeout_s=16, ready_timeout_s=8)
             ok = any(line.startswith("WWOK") for line in lines)
             detail = " | ".join(lines[-4:]) if lines else "No response from ESP32."
             if ok:
-                self.esp32_wifi_status.setText("WiFi saved to ESP32. Device will reboot/reconnect.")
-                self.esp32_wifi_status.setStyleSheet("font-size: 12px; color: #047857; font-weight: 800;")
+                self.set_esp32_wifi_status(f"WiFi saved to ESP32. Reconnecting to {ssid} and Pi {pi_host}:{port_num}.", "ok")
                 self.db.log_it_audit(self.current_user.get("username"), "ESP32 WiFi Provision", ssid, "Success", f"Pi host {pi_host}:{port_num}")
-                self.show_info("ESP32 WiFi", "WiFi settings saved to the ESP32. It will reconnect using the new network.")
+                self.show_info("ESP32 WiFi", "WiFi settings saved to the ESP32. It will reconnect using the new network without needing a restart.")
             else:
-                self.esp32_wifi_status.setText(f"ESP32 response: {detail}")
-                self.esp32_wifi_status.setStyleSheet("font-size: 12px; color: #b91c1c; font-weight: 800;")
+                self.set_esp32_wifi_status(f"ESP32 response: {detail}", "error")
         except Exception as exc:
-            self.esp32_wifi_status.setText(f"Provision failed: {exc}")
-            self.esp32_wifi_status.setStyleSheet("font-size: 12px; color: #b91c1c; font-weight: 800;")
+            self.set_esp32_wifi_status(f"Provision failed: {exc}", "error")
             self.db.log_it_audit(self.current_user.get("username"), "ESP32 WiFi Provision", ssid, "Failed", str(exc))
+        finally:
+            self.set_esp32_provisioning_busy(False)
 
     def restart_operation_manager(self):
         client = self.control_client()

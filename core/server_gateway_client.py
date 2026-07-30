@@ -48,6 +48,7 @@ class ServerGatewayClient:
                 pending_img_seq=row.get("pending_img_seq"),
                 last_seen_s=int(row.get("last_seen_s") or row.get("last_seen") or 9999),
                 battery_level=row.get("battery_level") or row.get("battery"),
+                online=row.get("is_online", row.get("online")),
             ))
         return devices
 

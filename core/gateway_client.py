@@ -14,11 +14,14 @@ class GatewayClient:
         r = self.session.get(f"{base_url.rstrip('/')}/devices", timeout=3)
         r.raise_for_status()
         data = r.json()
+        rows = data.get("devices") if isinstance(data, dict) else data
+        if not isinstance(rows, list):
+            rows = []
 
         devices = []
-        for d in data:
+        for d in rows:
             devices.append(Device(
-                id=d.get("id", ""),
+                id=d.get("device_id") or d.get("id", ""),
                 ip=d.get("ip", ""),
                 port=int(d.get("port", 0)),
                 fw=d.get("fw"),
@@ -26,6 +29,7 @@ class GatewayClient:
                 pending_img_seq=d.get("pending_img_seq"),
                 last_seen_s=int(d.get("last_seen_s", 9999)),
                 battery_level=d.get("battery_level"),
+                online=d.get("is_online", d.get("online")),
             ))
         return devices
 

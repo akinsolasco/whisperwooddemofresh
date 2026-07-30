@@ -38,7 +38,7 @@ jobs:
 
       - name: Build app with PyInstaller
         run: |
-          pyinstaller --noconfirm --windowed --onedir --name WhisperwoodDemo --icon assets/enhanced_living_whisperwood_icon.ico --add-data "assets;assets" main.py
+          pyinstaller --noconfirm --windowed --onedir --name WhisperwoodDemo --icon assets/enhanced_living_whisperwood_icon.ico --add-data "assets;assets" --hidden-import serial --hidden-import serial.tools.list_ports main.py
 
       - name: Install Inno Setup
         shell: powershell

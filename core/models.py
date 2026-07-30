@@ -22,10 +22,13 @@ class Device:
     pending_img_seq: Optional[int]
     last_seen_s: int
     battery_level: Optional[int] = None
+    online: Optional[bool] = None
 
     @property
     def is_online(self) -> bool:
-        return self.last_seen_s <= 10
+        if self.online is not None:
+            return bool(self.online)
+        return self.last_seen_s <= 30
 
 
 @dataclass

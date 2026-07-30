@@ -18,14 +18,18 @@ HOST = os.getenv("WHISPERWOOD_TCP_HOST", "0.0.0.0")
 TCP_PORT = int(os.getenv("WHISPERWOOD_TCP_PORT", "5000"))
 DATA_DIR = os.getenv("WHISPERWOOD_DATA_DIR", "/opt/whisperwood/data")
 SCHEDULE_FILE = os.path.join(DATA_DIR, "lcd_schedule.json")
+IMAGE_CACHE_DIR = os.path.join(DATA_DIR, "lcd_images")
 
 LCD_W = 320
 LCD_H = 240
 LCD_BYTES = LCD_W * LCD_H * 2
-ONLINE_TIMEOUT_S = 35
-ACK_TIMEOUT_S = 28
+ONLINE_TIMEOUT_S = int(os.getenv("WHISPERWOOD_ONLINE_TIMEOUT_S", "30"))
+HEARTBEAT_INTERVAL_S = int(os.getenv("WHISPERWOOD_HEARTBEAT_INTERVAL_S", "5"))
+ACK_TIMEOUT_S = int(os.getenv("WHISPERWOOD_ACK_TIMEOUT_S", "28"))
+IMAGE_RESYNC_COOLDOWN_S = int(os.getenv("WHISPERWOOD_IMAGE_RESYNC_COOLDOWN_S", "60"))
 
 os.makedirs(DATA_DIR, exist_ok=True)
+os.makedirs(IMAGE_CACHE_DIR, exist_ok=True)
 
 app = FastAPI(title="Whisperwood Operation Manager", version="0.2.0")
 
@@ -112,6 +116,51 @@ def image_to_rgb565_bytes(file_bytes: bytes, width: int = LCD_W, height: int = L
     return bytes(out)
 
 
+def parse_bool(value: Any) -> Optional[bool]:
+    if value is None:
+        return None
+    raw = str(value).strip().lower()
+    if raw in {"1", "true", "yes", "y", "on", "ok"}:
+        return True
+    if raw in {"0", "false", "no", "n", "off"}:
+        return False
+    return None
+
+
+def safe_device_filename(device_id: str) -> str:
+    return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(device_id))
+
+
+def cached_image_path(device_id: str) -> str:
+    return os.path.join(IMAGE_CACHE_DIR, f"{safe_device_filename(device_id)}.rgb565")
+
+
+def has_cached_device_image(device_id: str) -> bool:
+    path = cached_image_path(device_id)
+    try:
+        return os.path.exists(path) and os.path.getsize(path) == LCD_BYTES
+    except OSError:
+        return False
+
+
+def cache_device_image(device_id: str, rgb565: bytes) -> None:
+    if len(rgb565) != LCD_BYTES:
+        return
+    path = cached_image_path(device_id)
+    temp_path = f"{path}.tmp"
+    with open(temp_path, "wb") as fh:
+        fh.write(rgb565)
+    os.replace(temp_path, path)
+
+
+def load_cached_device_image(device_id: str) -> Optional[bytes]:
+    path = cached_image_path(device_id)
+    if not os.path.exists(path) or os.path.getsize(path) != LCD_BYTES:
+        return None
+    with open(path, "rb") as fh:
+        return fh.read()
+
+
 @dataclass
 class ConnState:
     sock: socket.socket
@@ -119,11 +168,19 @@ class ConnState:
     device_id: Optional[str] = None
     fw: Optional[str] = None
     last_seen: float = field(default_factory=time.time)
+    first_seen: float = field(default_factory=time.time)
+    last_status_at: float = 0.0
+    disconnected_at: Optional[float] = None
+    offline_reason: str = ""
     pending_seq: Optional[int] = None
     pending_img_seq: Optional[int] = None
     pending_lcd_seq: Optional[int] = None
     battery_level: Optional[int] = None
     heap: Optional[int] = None
+    rssi: Optional[int] = None
+    uptime_ms: Optional[int] = None
+    lcd_image_cached: Optional[bool] = None
+    last_image_resync_at: float = 0.0
     wifi: str = ""
     ip: str = ""
     closed: bool = False
@@ -224,8 +281,11 @@ def close_conn(st: ConnState, reason: str = "") -> None:
         if st.closed:
             return
         st.closed = True
-        if st.device_id and DEVICES.get(st.device_id) is st:
-            DEVICES.pop(st.device_id, None)
+        st.disconnected_at = time.time()
+        st.offline_reason = reason or "connection closed"
+        st.pending_seq = None
+        st.pending_img_seq = None
+        st.pending_lcd_seq = None
         if st in CONNS:
             CONNS.remove(st)
         for event in st.ack_events.values():
@@ -245,6 +305,11 @@ def register_device(st: ConnState, dev_id: str, fw: Optional[str]) -> None:
         st.device_id = dev_id
         st.fw = fw
         st.last_seen = time.time()
+        st.first_seen = st.last_seen
+        st.closed = False
+        st.disconnected_at = None
+        st.offline_reason = ""
+        st.ip = st.addr[0]
         DEVICES[dev_id] = st
     send_line(st, "OK", timeout=4.0)
     print(f"[{wall_time()}]   registered {dev_id} fw={fw}", flush=True)
@@ -300,6 +365,8 @@ def handle_line(st: ConnState, line: str) -> None:
         kv = parse_kv_line(line)
         battery = kv.get("battery")
         heap = kv.get("heap")
+        rssi = kv.get("rssi")
+        uptime_ms = kv.get("uptime_ms")
         try:
             st.battery_level = int(battery) if battery is not None and int(battery) >= 0 else None
         except Exception:
@@ -308,6 +375,20 @@ def handle_line(st: ConnState, line: str) -> None:
             st.heap = int(heap) if heap is not None else None
         except Exception:
             st.heap = None
+        try:
+            st.rssi = int(rssi) if rssi is not None else None
+        except Exception:
+            st.rssi = None
+        try:
+            st.uptime_ms = int(uptime_ms) if uptime_ms is not None else None
+        except Exception:
+            st.uptime_ms = None
+        lcd_image = parse_bool(kv.get("lcd_image"))
+        if lcd_image is not None:
+            st.lcd_image_cached = lcd_image
+            if not lcd_image:
+                queue_cached_image_resync(st, "esp reported no lcd image")
+        st.last_status_at = time.time()
         st.wifi = kv.get("wifi", "")
         st.ip = kv.get("ip", st.ip or st.addr[0])
         return
@@ -370,11 +451,14 @@ def tcp_server_loop() -> None:
 
 def heartbeat_loop() -> None:
     while True:
-        time.sleep(10)
+        time.sleep(HEARTBEAT_INTERVAL_S)
         with LOCK:
             states = list(DEVICES.values())
         for st in states:
             if st.closed:
+                continue
+            if time.time() - st.last_seen > ONLINE_TIMEOUT_S:
+                close_conn(st, "heartbeat timeout")
                 continue
             try:
                 send_line(st, "PING", timeout=3.0)
@@ -473,6 +557,7 @@ def get_device_state(device_id: str) -> ConnState:
 
 def device_to_json(st: ConnState) -> Dict[str, Any]:
     age = max(0, int(time.time() - st.last_seen))
+    online = st.online
     return {
         "id": st.device_id,
         "device_id": st.device_id,
@@ -485,11 +570,22 @@ def device_to_json(st: ConnState) -> Dict[str, Any]:
         "pending_lcd_seq": st.pending_lcd_seq,
         "last_seen_s": age,
         "last_seen": age,
-        "is_online": st.online,
-        "online": st.online,
+        "last_seen_at": datetime.utcfromtimestamp(st.last_seen).isoformat(),
+        "first_seen_at": datetime.utcfromtimestamp(st.first_seen).isoformat(),
+        "last_status_at": datetime.utcfromtimestamp(st.last_status_at).isoformat() if st.last_status_at else "",
+        "disconnected_at": datetime.utcfromtimestamp(st.disconnected_at).isoformat() if st.disconnected_at else "",
+        "is_online": online,
+        "online": online,
+        "status": "online" if online else "offline",
+        "connection_state": "online" if online else "offline",
+        "offline_reason": "" if online else (st.offline_reason or "stale"),
         "battery_level": st.battery_level,
         "battery": st.battery_level,
         "heap": st.heap,
+        "rssi": st.rssi,
+        "uptime_ms": st.uptime_ms,
+        "lcd_image_cached": st.lcd_image_cached,
+        "pi_cached_image": bool(st.device_id and has_cached_device_image(st.device_id)),
         "wifi": st.wifi,
         "reported_ip": st.ip,
     }
@@ -559,18 +655,14 @@ def send_text_to_device(body: Dict[str, Any]) -> Dict[str, Any]:
     return {"ok": True, "seq": seq, "ack": result, "line": line}
 
 
-def send_image_to_device(device_id: str, raw_file: bytes) -> Dict[str, Any]:
+def send_rgb565_to_device(device_id: str, rgb565: bytes, cache_after_ack: bool = True) -> Dict[str, Any]:
     if not device_id:
         raise HTTPException(status_code=400, detail="missing id")
     st = get_device_state(device_id)
     if st.pending_img_seq is not None:
         raise HTTPException(status_code=409, detail=f"image channel busy: pending_img_seq={st.pending_img_seq}")
-    try:
-        rgb565 = image_to_rgb565_bytes(raw_file, LCD_W, LCD_H)
-        if len(rgb565) != LCD_BYTES:
-            raise ValueError(f"bad converted size: {len(rgb565)}")
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=f"image convert failed: {exc}") from exc
+    if len(rgb565) != LCD_BYTES:
+        raise HTTPException(status_code=400, detail=f"bad image size: {len(rgb565)}")
 
     seq = next_seq()
     header = f"IMAGE seq={seq} size={len(rgb565)}"
@@ -588,6 +680,12 @@ def send_image_to_device(device_id: str, raw_file: bytes) -> Dict[str, Any]:
     result = pop_ack_result(st, "image", seq, timed_out=not acked)
     if not result.get("ok"):
         raise HTTPException(status_code=504 if result.get("timeout") else 502, detail=result)
+    if cache_after_ack:
+        try:
+            cache_device_image(device_id, rgb565)
+        except Exception as exc:
+            print(f"[{wall_time()}] cache image failed for {device_id}: {exc}", flush=True)
+    st.lcd_image_cached = True
     return {
         "ok": True,
         "seq": seq,
@@ -597,6 +695,46 @@ def send_image_to_device(device_id: str, raw_file: bytes) -> Dict[str, Any]:
         "height": LCD_H,
         "format": "RGB565_LE",
     }
+
+
+def send_image_to_device(device_id: str, raw_file: bytes) -> Dict[str, Any]:
+    try:
+        rgb565 = image_to_rgb565_bytes(raw_file, LCD_W, LCD_H)
+        if len(rgb565) != LCD_BYTES:
+            raise ValueError(f"bad converted size: {len(rgb565)}")
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"image convert failed: {exc}") from exc
+    return send_rgb565_to_device(device_id, rgb565, cache_after_ack=True)
+
+
+def send_cached_image_to_device(device_id: str) -> Dict[str, Any]:
+    rgb565 = load_cached_device_image(device_id)
+    if not rgb565:
+        raise HTTPException(status_code=404, detail="No cached LCD image for device")
+    return send_rgb565_to_device(device_id, rgb565, cache_after_ack=False)
+
+
+def queue_cached_image_resync(st: ConnState, reason: str) -> None:
+    device_id = st.device_id or ""
+    if not device_id or not has_cached_device_image(device_id):
+        return
+    now_ts = time.time()
+    if now_ts - st.last_image_resync_at < IMAGE_RESYNC_COOLDOWN_S:
+        return
+    if st.pending_img_seq is not None or not st.online:
+        return
+    st.last_image_resync_at = now_ts
+
+    def worker() -> None:
+        try:
+            # Let any just-arrived status/HELLO traffic settle before sending a large frame.
+            time.sleep(1.0)
+            send_cached_image_to_device(device_id)
+            print(f"[{wall_time()}] cached LCD image resent to {device_id}: {reason}", flush=True)
+        except Exception as exc:
+            print(f"[{wall_time()}] cached LCD image resync skipped for {device_id}: {exc}", flush=True)
+
+    threading.Thread(target=worker, daemon=True).start()
 
 
 def send_lcd_to_device(device_id: str, command: str) -> Dict[str, Any]:

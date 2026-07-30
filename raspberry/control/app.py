@@ -157,7 +157,7 @@ def sync_operation_devices():
             "battery_level": str(device.get("battery_level") if device.get("battery_level") is not None else ""),
             "battery_percent": device.get("battery_level") if isinstance(device.get("battery_level"), int) else None,
             "status": "online" if device.get("is_online") or device.get("online") else "offline",
-            "last_seen": now(),
+            "last_seen": device.get("last_seen_at") or now(),
             "t": now(),
         }
         if existing:
@@ -209,6 +209,13 @@ def merged_devices():
             "last_seen_s": live.get("last_seen_s") if live else 9999,
             "battery_level": live.get("battery_level") if live.get("battery_level") is not None else row.get("battery_percent"),
             "battery": live.get("battery_level") if live.get("battery_level") is not None else row.get("battery_percent"),
+            "rssi": live.get("rssi"),
+            "heap": live.get("heap"),
+            "wifi": live.get("wifi"),
+            "lcd_image_cached": live.get("lcd_image_cached"),
+            "pi_cached_image": live.get("pi_cached_image"),
+            "connection_state": live.get("connection_state") or ("online" if is_online else "offline"),
+            "offline_reason": live.get("offline_reason") or "",
             "pending_seq": live.get("pending_seq"),
             "pending_img_seq": live.get("pending_img_seq"),
             "pending_lcd_seq": live.get("pending_lcd_seq"),
@@ -217,6 +224,7 @@ def merged_devices():
     for device_id, live in operation_by_id.items():
         if device_id in seen:
             continue
+        is_online = bool(live.get("is_online") or live.get("online"))
         out.append({
             "id": device_id,
             "device_id": device_id,
@@ -225,12 +233,19 @@ def merged_devices():
             "port": live.get("port") or 5000,
             "fw": live.get("fw") or "",
             "firmware": live.get("fw") or "",
-            "status": "online",
-            "is_online": True,
-            "online": True,
+            "status": "online" if is_online else "offline",
+            "is_online": is_online,
+            "online": is_online,
             "last_seen_s": live.get("last_seen_s") or 0,
             "battery_level": live.get("battery_level"),
             "battery": live.get("battery_level"),
+            "rssi": live.get("rssi"),
+            "heap": live.get("heap"),
+            "wifi": live.get("wifi"),
+            "lcd_image_cached": live.get("lcd_image_cached"),
+            "pi_cached_image": live.get("pi_cached_image"),
+            "connection_state": live.get("connection_state") or ("online" if is_online else "offline"),
+            "offline_reason": live.get("offline_reason") or "",
             "paired_resident_id": None,
             "resident_name": "",
             "resident_uid": "",
