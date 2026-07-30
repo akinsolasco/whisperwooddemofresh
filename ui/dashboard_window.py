@@ -4117,7 +4117,18 @@ class DashboardWindow(QWidget):
             import serial
         except Exception as exc:
             raise RuntimeError("pyserial is not installed. Install/update the desktop app before provisioning ESP32 WiFi.") from exc
-        ser = serial.Serial(port=port, baudrate=115200, timeout=0.45, write_timeout=4)
+        try:
+            ser = serial.Serial(port=port, baudrate=115200, timeout=0.45, write_timeout=4)
+        except Exception as exc:
+            detail = str(exc)
+            lowered = detail.lower()
+            if "access is denied" in lowered or "permission" in lowered or "permissionerror" in lowered:
+                raise RuntimeError(
+                    f"{port} is busy or Windows denied access. Close Arduino Serial Monitor, "
+                    "Arduino Serial Plotter, PuTTY, Thonny, or any other app using the ESP32 USB port, "
+                    "then click Refresh Ports and try again."
+                ) from exc
+            raise RuntimeError(f"Could not open {port}. Unplug/replug the ESP32, refresh ports, and try again. Details: {detail}") from exc
         try:
             ser.setDTR(False)
             ser.setRTS(False)

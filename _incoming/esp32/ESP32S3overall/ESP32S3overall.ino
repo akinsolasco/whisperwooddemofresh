@@ -17,7 +17,8 @@ static const char* DEFAULT_WIFI_SSID = "EPD-GATEWAY";
 static const char* DEFAULT_WIFI_PASS = "epaper123";
 static const char* DEFAULT_PI_HOST = "192.168.4.1";
 static const uint16_t DEFAULT_PI_PORT = 5000;
-static const uint32_t WIFI_RETRY_MS = 5000;
+static const uint32_t WIFI_RETRY_MS = 15000;
+static const uint32_t WIFI_CONNECT_GRACE_MS = 20000;
 static const uint32_t PI_RETRY_MS = 3000;
 static const uint32_t STATUS_INTERVAL_MS = 5000;
 
@@ -939,6 +940,8 @@ static void loadNetworkConfig() {
   gPiPort = port ? port : DEFAULT_PI_PORT;
 }
 
+static void startWifiAttempt(const char* reason);
+
 static void saveNetworkConfig(const char* ssid, const char* pass, const char* piHost, uint16_t piPort) {
   prefs.begin("epdnet", false);
   prefs.putString("ssid", ssid ? ssid : "");
@@ -963,9 +966,35 @@ static void printNetworkConfig() {
   Serial.println(WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "-");
 }
 
+static void prepareWifiRadioForConfig() {
+  if (client.connected()) client.stop();
+  gPiSessionOnline = false;
+
+  WiFi.setAutoReconnect(false);
+  WiFi.scanDelete();
+  WiFi.disconnect(false, false);
+  delay(150);
+  WiFi.mode(WIFI_OFF);
+  delay(250);
+  WiFi.mode(WIFI_STA);
+  WiFi.persistent(false);
+  WiFi.setSleep(false);
+  WiFi.setHostname(DEVICE_ID);
+
+  gLastWifiAttemptMs = 0;
+  gLastPiAttemptMs = 0;
+  gLastWifiStatus = WiFi.status();
+}
+
 static void scanWifiForSerial() {
   Serial.println("WWSCAN begin=1");
+  prepareWifiRadioForConfig();
   int count = WiFi.scanNetworks(false, true);
+  if (count < 0) {
+    delay(350);
+    WiFi.scanDelete();
+    count = WiFi.scanNetworks(false, true);
+  }
   if (count < 0) {
     Serial.println("WWERR scan_failed");
     return;
@@ -1020,6 +1049,7 @@ static void handleSerialCommandLine(char* line) {
     uint16_t port = (uint16_t)atoi(portBuf);
     if (!port) port = DEFAULT_PI_PORT;
 
+    prepareWifiRadioForConfig();
     saveNetworkConfig(ssid, pass, pi, port);
     strncpy(gWifiSsid, ssid, sizeof(gWifiSsid) - 1);
     gWifiSsid[sizeof(gWifiSsid) - 1] = '\0';
@@ -1028,12 +1058,9 @@ static void handleSerialCommandLine(char* line) {
     strncpy(gPiHost, pi, sizeof(gPiHost) - 1);
     gPiHost[sizeof(gPiHost) - 1] = '\0';
     gPiPort = port;
-    client.stop();
-    gPiSessionOnline = false;
-    WiFi.disconnect(false, false);
-    gLastWifiAttemptMs = 0;
-    gLastPiAttemptMs = 0;
     Serial.println("WWOK saved=1 reconnecting=1");
+    Serial.flush();
+    startWifiAttempt("provisioned credentials");
     return;
   }
 
@@ -1079,20 +1106,11 @@ static void serviceSerialProvisioningWindow(uint32_t windowMs) {
 }
 
 // ================= NETWORK =================
-static void configureWifiStation() {
-  WiFi.mode(WIFI_STA);
-  WiFi.persistent(false);
-  WiFi.setSleep(false);
-  WiFi.setHostname(DEVICE_ID);
-  WiFi.setAutoReconnect(true);
-}
-
 static void startWifiAttempt(const char* reason) {
-  configureWifiStation();
   Serial.print("[WIFI] connect attempt: ");
   Serial.println(reason);
-  WiFi.disconnect(false, false);
-  delay(50);
+  prepareWifiRadioForConfig();
+  WiFi.setAutoReconnect(true);
   WiFi.begin(gWifiSsid, gWifiPass);
   gLastWifiAttemptMs = millis();
 }
@@ -1112,6 +1130,14 @@ static bool maintainWiFi() {
 
   if (status == WL_CONNECTED) {
     return true;
+  }
+
+  if (
+    gLastWifiAttemptMs != 0 &&
+    millis() - gLastWifiAttemptMs < WIFI_CONNECT_GRACE_MS &&
+    (status == WL_IDLE_STATUS || status == WL_DISCONNECTED)
+  ) {
+    return false;
   }
 
   if (gLastWifiAttemptMs == 0 || millis() - gLastWifiAttemptMs >= WIFI_RETRY_MS) {
