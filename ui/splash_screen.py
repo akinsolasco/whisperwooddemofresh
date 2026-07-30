@@ -205,10 +205,11 @@ class SplashScreen(QtWidgets.QWidget):
             self.boot_log.setText(result["message"])
             return
 
-        self.boot_log.setText(f"Update found: v{result['latest_version']}")
+        source = result.get("source") or "update service"
+        self.boot_log.setText(f"Update found: v{result['latest_version']} via {source}")
         QtWidgets.QApplication.processEvents()
 
-        download = self.updater.download_update()
+        download = self.updater.download_update(result)
 
         if not download["success"]:
             self.boot_log.setText(download["message"])

@@ -1,8 +1,12 @@
 import requests
 from pathlib import Path
+from typing import Dict, List, Optional
 
 from config import (
     APP_VERSION,
+    DEFAULT_CONTROL_SERVICE_HOST,
+    DEFAULT_DOWNLOAD_SITE_PORT,
+    DEFAULT_DOWNLOAD_SITE_SLUG,
     GITHUB_OWNER,
     GITHUB_REPO,
     INSTALLER_NAME,
@@ -26,6 +30,28 @@ class UpdaterService:
         elif v.startswith("v"):
             v = v[1:]
         return tuple(int(x) for x in v.split("."))
+
+    def release_version(self, tag_name: str) -> str:
+        tag_name = str(tag_name or "").strip()
+        prefix = RELEASE_TAG_PREFIX
+        if prefix and tag_name.lower().startswith(prefix.lower()):
+            return tag_name[len(prefix):].strip()
+        if tag_name.lower().startswith("v"):
+            return tag_name[1:].strip()
+        return tag_name
+
+    def update_result(self, source: str, tag_name: str, download_url: str, release_url: str = "") -> Dict:
+        latest_version = self.release_version(tag_name)
+        has_update = self.parse_version(latest_version) > self.parse_version(APP_VERSION)
+        return {
+            "enabled": True,
+            "has_update": has_update,
+            "latest_version": latest_version,
+            "download_url": download_url,
+            "release_url": release_url,
+            "source": source,
+            "message": f"Update available from {source}" if has_update else "App is up to date",
+        }
 
     def latest_release(self):
         r = self.session.get(self.api_url, timeout=6)
@@ -53,43 +79,88 @@ class UpdaterService:
         tag = release.get("tag_name", f"{RELEASE_TAG_PREFIX}{APP_VERSION}")
         return f"https://github.com/{GITHUB_OWNER}/{GITHUB_REPO}/releases/download/{tag}/{INSTALLER_NAME}"
 
-    def check_for_updates(self, latest_version=None):
-        print("Installed APP_VERSION:", APP_VERSION)
-        print("Latest GitHub version:", latest_version)
+    def github_update_result(self) -> Optional[Dict]:
+        data = self.latest_release()
+        if not data:
+            return None
+        latest_tag = data.get("tag_name", f"{RELEASE_TAG_PREFIX}{APP_VERSION}")
+        return self.update_result(
+            "GitHub",
+            latest_tag,
+            self.installer_url_for_release(data),
+            data.get("html_url") or "",
+        )
+
+    def configured_pi_hosts(self) -> List[str]:
+        hosts = []
         try:
-            data = self.latest_release()
-            if not data:
-                return {
-                    "enabled": True,
-                    "has_update": False,
-                    "latest_version": APP_VERSION,
-                    "message": "No release found",
-                }
+            from core.app_settings import AppSettingsStore
+            profile = AppSettingsStore().get_active_profile()
+            hosts.append(profile.get("host") or "")
+        except Exception:
+            pass
+        hosts.append(DEFAULT_CONTROL_SERVICE_HOST)
+        out = []
+        seen = set()
+        for host in hosts:
+            host = str(host or "").strip()
+            marker = host.lower()
+            if host and marker not in seen:
+                seen.add(marker)
+                out.append(host)
+        return out
 
-            latest_tag = data.get("tag_name", f"{RELEASE_TAG_PREFIX}{APP_VERSION}")
-            latest_version = latest_tag.replace(RELEASE_TAG_PREFIX, "").strip()
+    def local_download_site_result(self) -> Optional[Dict]:
+        slug = str(DEFAULT_DOWNLOAD_SITE_SLUG or "download").strip("/")
+        for host in self.configured_pi_hosts():
+            base_url = f"http://{host}:{int(DEFAULT_DOWNLOAD_SITE_PORT)}/{slug}"
+            try:
+                response = self.session.get(f"{base_url}/latest.json", timeout=3)
+                response.raise_for_status()
+                data = response.json()
+                tag_name = data.get("tag_name")
+                asset_name = data.get("asset_name") or INSTALLER_NAME
+                if not tag_name:
+                    continue
+                return self.update_result(
+                    "Raspberry Pi download site",
+                    tag_name,
+                    f"{base_url}/{asset_name}",
+                    data.get("release_url") or "",
+                )
+            except Exception:
+                continue
+        return None
 
-            has_update = self.parse_version(latest_version) > self.parse_version(APP_VERSION)
-
-            download_url = self.installer_url_for_release(data)
-
-            return {
-                "enabled": True,
-                "has_update": has_update,
-                "latest_version": latest_version,
-                "download_url": download_url,
-                "message": "Update available" if has_update else "App is up to date",
-            }
-
+    def check_for_updates(self, latest_version=None):
+        candidates = []
+        errors = []
+        try:
+            github = self.github_update_result()
+            if github:
+                candidates.append(github)
         except Exception as e:
-            return {
-                "enabled": True,
-                "has_update": False,
-                "message": f"Update check failed: {e}",
-            }
+            errors.append(f"GitHub: {e}")
 
-    def download_update(self):
-        update = self.check_for_updates()
+        local = self.local_download_site_result()
+        if local:
+            candidates.append(local)
+
+        if candidates:
+            return max(candidates, key=lambda item: self.parse_version(item.get("latest_version", "0.0.0")))
+
+        message = "No update source is reachable"
+        if errors:
+            message += f" ({'; '.join(errors)})"
+        return {
+            "enabled": True,
+            "has_update": False,
+            "latest_version": APP_VERSION,
+            "message": message,
+        }
+
+    def download_update(self, update=None):
+        update = update or self.check_for_updates()
         download_url = update.get("download_url")
         if not download_url:
             return {
@@ -112,8 +183,8 @@ class UpdaterService:
                 "success": True,
                 "path": str(target_path),
                 "message": "Update downloaded successfully",
+                "source": update.get("source", ""),
             }
-
         except Exception as e:
             return {
                 "success": False,
