@@ -1169,7 +1169,7 @@ static void handleSerialProvisioning() {
 static void announceSerialProvisioningReady() {
   Serial.print("WWREADY id=");
   Serial.print(DEVICE_ID);
-  Serial.print(" fw=4 ssid=");
+  Serial.print(" fw=5 ssid=");
   Serial.print(gWifiSsid);
   Serial.print(" pi=");
   Serial.print(gPiHost);
@@ -1241,12 +1241,7 @@ static bool waitForWiFi(uint32_t maxWaitMs) {
     Serial.println("[WIFI] boot wait timed out; continuing with background reconnect");
     return false;
   }
-  Serial.println("\nWiFi connected!");
-  Serial.print("IP: ");
-  Serial.println(WiFi.localIP());
-  Serial.print("Hostname: ");
-  Serial.println(WiFi.getHostname());
-  stage("wifi: connected");
+  Serial.println("[WIFI] connected");
   return true;
 }
 
@@ -1276,7 +1271,7 @@ static bool connectToPi() {
   }
 
   char hello[96];
-  snprintf(hello, sizeof(hello), "HELLO id=%s fw=4\n", DEVICE_ID);
+  snprintf(hello, sizeof(hello), "HELLO id=%s fw=5\n", DEVICE_ID);
   if (!sendRawToPi(hello)) {
     stage("tcp: hello failed");
     return false;
@@ -1451,7 +1446,7 @@ void setup() {
 
   // LCD init
   pinMode(LCD_BL_PIN, OUTPUT);
-  setLcdPower(true);
+  setLcdPower(false);
   initLCD();
   initPersistentFileSystem();
   if (loadLcdImageFromFlash()) {
@@ -1460,7 +1455,7 @@ void setup() {
       releaseLcdImageBuffer();
     }
   } else {
-    showLCDPlaceholder();
+    Serial.println("[LCD] no stored image; LCD backlight kept off");
   }
 
   // E-paper init memory
