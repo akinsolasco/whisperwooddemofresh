@@ -703,6 +703,18 @@ static void showLCDPlaceholder() {
 static void setLcdPower(bool on) {
   lcdPowerOn = on;
   digitalWrite(LCD_BL_PIN, on ? HIGH : LOW);
+  if (on) {
+    delay(20);
+  }
+}
+
+static uint32_t checksumBytes(const uint8_t* data, size_t len) {
+  uint32_t hash = 2166136261UL;
+  for (size_t i = 0; i < len; i++) {
+    hash ^= data[i];
+    hash *= 16777619UL;
+  }
+  return hash;
 }
 
 static void releaseLcdImageBuffer() {
@@ -837,7 +849,9 @@ static bool receiveExactBytes(uint8_t* dst, size_t totalBytes, uint32_t timeoutM
 }
 
 static void displayLCDImage565(const uint16_t* img565) {
+  setLcdPower(true);
   stage("lcd: pushImage");
+  tft.fillScreen(TFT_BLACK);
   tft.pushImage(0, 0, LCD_IMG_W, LCD_IMG_H, img565);
   stage("lcd: done");
 }
@@ -886,15 +900,23 @@ static void handleImageLine(const char* line) {
     return;
   }
 
+  uint32_t checksum = checksumBytes((const uint8_t*)lcdImageBuf, LCD_IMG_BYTES);
+  Serial.printf("[LCD] image checksum=0x%08lX\n", (unsigned long)checksum);
   bool persisted = saveLcdImageToFlash();
-  if (lcdPowerOn) {
-    displayLCDImage565(lcdImageBuf);
-  }
+  displayLCDImage565(lcdImageBuf);
   if (persisted) {
     releaseLcdImageBuffer();
   }
   char ack[128];
-  snprintf(ack, sizeof(ack), "ACKIMG seq=%ld ok=1 persisted=%d\n", seq, persisted ? 1 : 0);
+  snprintf(
+    ack,
+    sizeof(ack),
+    "ACKIMG seq=%ld ok=1 persisted=%d lcd_on=%d checksum=%08lX\n",
+    seq,
+    persisted ? 1 : 0,
+    lcdPowerOn ? 1 : 0,
+    (unsigned long)checksum
+  );
   sendRawToPi(ack);
   Serial.printf("[ACKIMG] sent seq=%ld\n", seq);
 }
