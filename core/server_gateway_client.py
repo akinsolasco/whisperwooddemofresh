@@ -75,7 +75,7 @@ class ServerGatewayClient:
 
     def save_schedule(self, _base_url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         result = self.client(timeout=12.0).operation_schedule(payload)
-        if not result.get("ok"):
+        if not result.get("ok") and result.get("status_code") in {404, 405}:
             result = self.client(timeout=8.0).save_schedule(payload)
         return {
             "status_code": result.get("status_code") or (200 if result.get("ok") else 500),

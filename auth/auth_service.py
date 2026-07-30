@@ -5,7 +5,7 @@ import psycopg2
 
 from config import DATABASE_MODE, LOCAL_DB_PATH, DEMO_USERS
 from core.app_settings import APP_MODE_SERVER, AppSettingsStore
-from core.control_service_client import ControlServiceClient
+from core.control_service_client import ControlServiceClient, friendly_error_message
 from db_config import DB_CONFIG
 
 
@@ -393,8 +393,8 @@ class AuthService:
         except psycopg2.OperationalError:
             return {
                 "success": False,
-                "message": "Cannot connect to network database. Connect to the network and try again.",
+                "message": friendly_error_message("Cannot connect to network database."),
                 "user": None,
             }
         except Exception as e:
-            return {"success": False, "message": str(e), "user": None}
+            return {"success": False, "message": friendly_error_message(str(e)), "user": None}

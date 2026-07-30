@@ -5,6 +5,63 @@ from typing import Any, Dict, Optional
 import requests
 
 
+FACILITY_NETWORK_GUIDANCE = (
+    "Connect this computer to the dedicated facility network, then try again. "
+    "If you are already on that network, ask IT to check the Raspberry Pi Control Service."
+)
+
+
+def friendly_error_message(
+    error: str = "",
+    endpoint: str = "",
+    status_code: Optional[int] = None,
+    data: Optional[Any] = None,
+) -> str:
+    raw = str(error or "").strip()
+    detail = raw
+    if isinstance(data, dict):
+        value = data.get("detail") or data.get("err") or data.get("error") or data.get("message")
+        if isinstance(value, dict):
+            value = value.get("message") or value.get("err") or value.get("error") or value.get("line")
+        if value:
+            detail = str(value)
+    lowered = detail.lower()
+    endpoint = endpoint or ""
+
+    if status_code in {401} and endpoint.startswith("/auth/login"):
+        return "Username or password was not accepted. Check the details or ask IT/Admin for a temporary password."
+    if status_code in {401, 403}:
+        return "This workstation is not authorized to use the Raspberry Pi Control Service. Ask IT to verify the Control API key."
+    if status_code == 404:
+        return "The Raspberry Pi server is reachable, but this feature is not available on the server yet. Ask IT to update the Pi backend."
+    if status_code == 409 or "busy" in lowered:
+        return "The device is busy finishing the previous request. Wait a few seconds, then try again."
+    if status_code in {502, 504} or "timeout" in lowered or "timed out" in lowered:
+        return f"The Raspberry Pi server did not complete the request in time. {FACILITY_NETWORK_GUIDANCE}"
+    if status_code and status_code >= 500:
+        return "The Raspberry Pi server reported an internal service error. Ask IT to check the Control Service and Operation Manager logs."
+    if "connection refused" in lowered:
+        return "The Raspberry Pi was found, but the Control Service is not accepting connections. Ask IT to restart or check the Raspberry Pi Control Service."
+    if "cannot connect to network database" in lowered:
+        return f"Cannot reach the network database. {FACILITY_NETWORK_GUIDANCE}"
+    if any(marker in lowered for marker in (
+        "failed to establish",
+        "max retries exceeded",
+        "no route to host",
+        "network is unreachable",
+        "offline",
+        "unreachable",
+        "name resolution",
+        "temporary failure",
+    )):
+        return f"Cannot reach the Raspberry Pi Control Service. {FACILITY_NETWORK_GUIDANCE}"
+    if "malformed" in lowered or "invalid response" in lowered:
+        return "The Raspberry Pi server replied with an unreadable response. Ask IT to check the Control Service logs."
+    if not detail:
+        return f"The request could not be completed. {FACILITY_NETWORK_GUIDANCE}"
+    return detail
+
+
 @dataclass
 class ControlServiceProfile:
     name: str
@@ -96,23 +153,23 @@ class ControlServiceClient:
                 timeout=self.timeout,
             )
         except requests.Timeout:
-            return self._result(False, endpoint, error="Control Service request timed out.")
-        except requests.ConnectionError:
-            return self._result(False, endpoint, error="Control Service Offline or Unreachable.")
+            return self._result(False, endpoint, error=friendly_error_message("Control Service request timed out.", endpoint))
+        except requests.ConnectionError as exc:
+            return self._result(False, endpoint, error=friendly_error_message(str(exc), endpoint))
         except requests.RequestException as exc:
-            return self._result(False, endpoint, error=f"Control Service request failed: {exc}")
+            return self._result(False, endpoint, error=friendly_error_message(str(exc), endpoint))
 
         if response.status_code == 403:
-            return self._result(False, endpoint, response.status_code, error="Unauthorized Control Service request.")
+            return self._result(False, endpoint, response.status_code, error=friendly_error_message("Unauthorized Control Service request.", endpoint, response.status_code))
 
         try:
             data = response.json()
         except ValueError:
-            return self._result(False, endpoint, response.status_code, error="Malformed Control Service response.")
+            return self._result(False, endpoint, response.status_code, error=friendly_error_message("Malformed Control Service response.", endpoint, response.status_code))
 
         if response.status_code >= 400:
             message = data.get("err") or data.get("error") or data.get("message") or response.reason
-            return self._result(False, endpoint, response.status_code, data, str(message))
+            return self._result(False, endpoint, response.status_code, data, friendly_error_message(str(message), endpoint, response.status_code, data))
 
         return self._result(True, endpoint, response.status_code, data)
 

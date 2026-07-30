@@ -20,7 +20,7 @@ from PyQt6.QtWidgets import (
 from config import APP_NAME, DEFAULT_PI_BASE_URL, ASSETS_DIR, ROLE_LABELS, APP_DATA_DIR
 from auth.auth_service import AuthService
 from core.app_settings import APP_MODE_DEMO, APP_MODE_SERVER, AppSettingsStore
-from core.control_service_client import ControlServiceClient
+from core.control_service_client import ControlServiceClient, friendly_error_message
 from core.db_service import DatabaseService, generate_resident_uid
 from core.gateway_client import GatewayClient
 from core.models import HighlightRule, auto_fg_for_bg, PALETTE, SECTIONS
@@ -2986,10 +2986,51 @@ class DashboardWindow(QWidget):
         return "\n".join(lines)
 
     def show_error(self, title, text):
-        QMessageBox.critical(self, title, text)
+        QMessageBox.critical(self, title, friendly_error_message(str(text or "")))
 
     def show_info(self, title, text):
         QMessageBox.information(self, title, text)
+
+    def begin_button_busy(self, button, busy_text):
+        if button is None:
+            return None
+        state = {
+            "button": button,
+            "text": button.text(),
+            "enabled": button.isEnabled(),
+        }
+        button.setText(busy_text)
+        button.setEnabled(False)
+        QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+        QApplication.processEvents()
+        return state
+
+    def end_button_busy(self, state):
+        if not state:
+            return
+        button = state.get("button")
+        if button is not None:
+            button.setText(state.get("text") or button.text())
+            button.setEnabled(bool(state.get("enabled", True)))
+        try:
+            QApplication.restoreOverrideCursor()
+        except Exception:
+            pass
+        QApplication.processEvents()
+
+    def result_error_message(self, result, fallback="The request could not be completed."):
+        status_code = result.get("status_code") if isinstance(result, dict) else None
+        body = result.get("body") if isinstance(result, dict) else None
+        message = fallback
+        if isinstance(body, dict):
+            value = body.get("message") or body.get("error") or body.get("err") or body.get("detail")
+            if isinstance(value, dict):
+                value = value.get("message") or value.get("error") or value.get("err") or value.get("line")
+            if value:
+                message = str(value)
+        elif body:
+            message = str(body)
+        return friendly_error_message(message, status_code=status_code, data=body)
 
     def set_gateway_state(self, online: bool):
         self.gateway_online = bool(online)
@@ -3062,8 +3103,12 @@ class DashboardWindow(QWidget):
         self.load_control_services()
 
     def refresh_all(self):
-        self.refresh_control_connection_status()
-        self.refresh_devices()
+        busy = self.begin_button_busy(getattr(self, "btn_refresh_devices", None), "Refreshing...")
+        try:
+            self.refresh_control_connection_status()
+            self.refresh_devices()
+        finally:
+            self.end_button_busy(busy)
 
     def apply_role_permissions(self):
         access = {
@@ -3143,7 +3188,12 @@ class DashboardWindow(QWidget):
             return True
         if not self.server_mode and self.gateway_online:
             return True
-        self.show_error("Network Required", f"{action_name} requires an active Raspberry Pi Control Service connection.")
+        self.show_error(
+            "Facility Network Required",
+            f"{action_name} needs the Raspberry Pi Control Service. "
+            "Connect this computer to the dedicated facility network, then try again. "
+            "If you are already connected, ask IT to check the Raspberry Pi and Control Service."
+        )
         return False
 
     def safe_get_devices(self) -> List[Dict[str, Any]]:
@@ -3748,7 +3798,7 @@ class DashboardWindow(QWidget):
     def control_status_text(self, result):
         if result.get("ok"):
             return "Connected"
-        return result.get("error") or "Control Service Offline or Unreachable"
+        return friendly_error_message(result.get("error") or "Control Service Offline or Unreachable")
 
     def load_it_health(self):
         if not hasattr(self, "it_control_stack"):
@@ -3915,27 +3965,31 @@ class DashboardWindow(QWidget):
         self.show_info("Copied", "API key copied.")
 
     def test_control_connection(self):
+        busy = self.begin_button_busy(getattr(self, "btn_test_control_connection", None), "Testing...")
         client = self.control_client_from_form()
-        result = client.health()
-        self.control_last_results["health"] = result
-        if result.get("ok"):
-            data = result.get("data") or {}
-            hostname = data.get("hostname") or "unknown host"
-            version = data.get("version") or "version pending"
-            self.control_test_status.setText(f"Connection Status: Connected | {hostname} | {version}")
-            self.control_test_status.setStyleSheet("font-size: 12px; color: #047857; font-weight: 800;")
-            audit_result = "Success"
-            message = f"Connected to Control Service at {client.base_url}"
-        else:
-            self.control_test_status.setText(f"Connection Status: {self.control_status_text(result)}")
-            self.control_test_status.setStyleSheet("font-size: 12px; color: #b91c1c; font-weight: 800;")
-            audit_result = "Failed"
-            message = self.control_status_text(result)
-        tested_profile = self.control_profile_from_form()
-        self.update_control_network_labels(result, tested_profile)
-        self.update_control_header(result, tested_profile)
-        self.db.log_it_audit(self.current_user.get("username"), "Connection Test", client.base_url, audit_result, message)
-        self.load_it_audit_logs()
+        try:
+            result = client.health()
+            self.control_last_results["health"] = result
+            if result.get("ok"):
+                data = result.get("data") or {}
+                hostname = data.get("hostname") or "unknown host"
+                version = data.get("version") or "version pending"
+                self.control_test_status.setText(f"Connection Status: Connected | {hostname} | {version}")
+                self.control_test_status.setStyleSheet("font-size: 12px; color: #047857; font-weight: 800;")
+                audit_result = "Success"
+                message = f"Connected to Control Service at {client.base_url}"
+            else:
+                self.control_test_status.setText(f"Connection Status: {self.control_status_text(result)}")
+                self.control_test_status.setStyleSheet("font-size: 12px; color: #b91c1c; font-weight: 800;")
+                audit_result = "Failed"
+                message = self.control_status_text(result)
+            tested_profile = self.control_profile_from_form()
+            self.update_control_network_labels(result, tested_profile)
+            self.update_control_header(result, tested_profile)
+            self.db.log_it_audit(self.current_user.get("username"), "Connection Test", client.base_url, audit_result, message)
+            self.load_it_audit_logs()
+        finally:
+            self.end_button_busy(busy)
 
     def update_control_header(self, health_result=None, profile=None):
         if not hasattr(self, "control_header_status"):
@@ -4066,28 +4120,34 @@ class DashboardWindow(QWidget):
     def refresh_esp32_serial_ports(self):
         if not hasattr(self, "esp32_serial_port"):
             return
+        busy = self.begin_button_busy(getattr(self, "btn_refresh_esp32_ports", None), "Refreshing...")
         self.set_esp32_wifi_status("Refreshing USB serial ports...", "pending")
-        current = self.esp32_serial_port.currentData()
-        self.esp32_serial_port.clear()
         try:
-            from serial.tools import list_ports
-        except Exception:
-            self.set_esp32_wifi_status("pyserial is not installed. Install/update the desktop app.", "error")
-            return
-        ports = list(list_ports.comports())
-        for port in ports:
-            label = f"{port.device} - {port.description}"
-            self.esp32_serial_port.addItem(label, port.device)
-        if current:
-            for idx in range(self.esp32_serial_port.count()):
-                if self.esp32_serial_port.itemData(idx) == current:
-                    self.esp32_serial_port.setCurrentIndex(idx)
-                    break
-        count = self.esp32_serial_port.count()
-        self.set_esp32_wifi_status(
-            f"{count} USB serial port(s) found." if count else "No USB serial ports found.",
-            "ok" if count else "error",
-        )
+            current = self.esp32_serial_port.currentData()
+            self.esp32_serial_port.clear()
+            try:
+                from serial.tools import list_ports
+            except Exception:
+                message = "USB serial support is missing from this installation. Install/update the desktop app, then try again."
+                self.set_esp32_wifi_status(message, "error")
+                self.show_error("USB Ports", message)
+                return
+            ports = list(list_ports.comports())
+            for port in ports:
+                label = f"{port.device} - {port.description}"
+                self.esp32_serial_port.addItem(label, port.device)
+            if current:
+                for idx in range(self.esp32_serial_port.count()):
+                    if self.esp32_serial_port.itemData(idx) == current:
+                        self.esp32_serial_port.setCurrentIndex(idx)
+                        break
+            count = self.esp32_serial_port.count()
+            self.set_esp32_wifi_status(
+                f"{count} USB serial port(s) found." if count else "No USB serial ports found. Plug in the ESP32, wait a few seconds, then click Refresh Ports again.",
+                "ok" if count else "error",
+            )
+        finally:
+            self.end_button_busy(busy)
 
     def set_esp32_wifi_status(self, message, state="info"):
         if not hasattr(self, "esp32_wifi_status"):
@@ -4199,10 +4259,14 @@ class DashboardWindow(QWidget):
         return quote(str(value or "").strip(), safe="")
 
     def scan_esp32_wifi_networks(self):
+        busy = self.begin_button_busy(getattr(self, "btn_scan_esp32_wifi", None), "Scanning...")
         self.set_esp32_provisioning_busy(True)
         self.set_esp32_wifi_status("Scanning WiFi from ESP32 over USB... keep the board plugged in.", "pending")
         try:
             lines = self._esp32_serial_transaction("WWSCAN\n", ("WWEND", "WWERR"), timeout_s=22, ready_timeout_s=8)
+            err_line = next((line for line in lines if line.startswith("WWERR")), "")
+            if err_line:
+                raise RuntimeError(f"The ESP32 returned an error during WiFi scan. {err_line}")
             networks = []
             for line in lines:
                 if not line.startswith("WWSSID "):
@@ -4226,10 +4290,18 @@ class DashboardWindow(QWidget):
                 f"Found {len(networks)} WiFi network(s).{detail}" if networks else "No WiFi networks returned by ESP32. Confirm the latest ESP32 firmware is flashed.",
                 "ok" if networks else "error",
             )
+            if not networks:
+                self.show_error(
+                    "WiFi Scan",
+                    "The ESP32 did not return any WiFi networks. Keep it plugged in, confirm the latest ESP32 firmware is flashed, then try Scan WiFi again."
+                )
         except Exception as exc:
-            self.set_esp32_wifi_status(f"WiFi scan failed: {exc}", "error")
+            message = friendly_error_message(str(exc))
+            self.set_esp32_wifi_status(f"WiFi scan failed. {message}", "error")
+            self.show_error("WiFi Scan Failed", message)
         finally:
             self.set_esp32_provisioning_busy(False)
+            self.end_button_busy(busy)
 
     def provision_esp32_wifi(self):
         ssid = self.esp32_wifi_ssid.currentText().strip() if hasattr(self, "esp32_wifi_ssid") else ""
@@ -4255,6 +4327,7 @@ class DashboardWindow(QWidget):
             f"pi={self._serial_value(pi_host)} "
             f"port={port_num}\n"
         )
+        busy = self.begin_button_busy(getattr(self, "btn_apply_esp32_wifi", None), "Saving...")
         self.set_esp32_provisioning_busy(True)
         self.set_esp32_wifi_status(f"Saving WiFi '{ssid}' to ESP32 and waiting for acknowledgement...", "pending")
         try:
@@ -4266,26 +4339,35 @@ class DashboardWindow(QWidget):
                 self.db.log_it_audit(self.current_user.get("username"), "ESP32 WiFi Provision", ssid, "Success", f"Pi host {pi_host}:{port_num}")
                 self.show_info("ESP32 WiFi", "WiFi settings saved to the ESP32. It will reconnect using the new network without needing a restart.")
             else:
-                self.set_esp32_wifi_status(f"ESP32 response: {detail}", "error")
+                message = f"The ESP32 did not confirm the WiFi save. Last response: {detail}"
+                self.set_esp32_wifi_status(message, "error")
+                self.show_error("ESP32 WiFi", message)
         except Exception as exc:
-            self.set_esp32_wifi_status(f"Provision failed: {exc}", "error")
-            self.db.log_it_audit(self.current_user.get("username"), "ESP32 WiFi Provision", ssid, "Failed", str(exc))
+            message = friendly_error_message(str(exc))
+            self.set_esp32_wifi_status(f"Provision failed. {message}", "error")
+            self.db.log_it_audit(self.current_user.get("username"), "ESP32 WiFi Provision", ssid, "Failed", message)
+            self.show_error("ESP32 WiFi Failed", message)
         finally:
             self.set_esp32_provisioning_busy(False)
+            self.end_button_busy(busy)
 
     def restart_operation_manager(self):
+        busy = self.begin_button_busy(getattr(self, "btn_restart_operation", None), "Restarting...")
         client = self.control_client()
-        result = client.restart_operation()
-        audit_result = "Success" if result.get("ok") else "Failed"
-        message = "Operation Manager restart requested." if result.get("ok") else self.control_status_text(result)
-        self.db.log_it_audit(self.current_user.get("username"), "Restart Operation Manager", client.base_url, audit_result, message)
-        self.load_it_audit_logs()
-        self.control_last_results["operation"] = client.operation_status()
-        self.load_control_services()
-        if result.get("ok"):
-            self.show_info("Restart requested", "Operation Manager restart request was sent to the Raspberry Pi Control Service.")
-        else:
-            self.show_error("Restart failed", message)
+        try:
+            result = client.restart_operation()
+            audit_result = "Success" if result.get("ok") else "Failed"
+            message = "Operation Manager restart requested." if result.get("ok") else self.control_status_text(result)
+            self.db.log_it_audit(self.current_user.get("username"), "Restart Operation Manager", client.base_url, audit_result, message)
+            self.load_it_audit_logs()
+            self.control_last_results["operation"] = client.operation_status()
+            self.load_control_services()
+            if result.get("ok"):
+                self.show_info("Restart requested", "Operation Manager restart request was sent to the Raspberry Pi Control Service.")
+            else:
+                self.show_error("Restart failed", message)
+        finally:
+            self.end_button_busy(busy)
 
     def load_it_audit_logs(self):
         if not hasattr(self, "it_audit_table"):
@@ -4850,6 +4932,7 @@ class DashboardWindow(QWidget):
             self.show_error("Missing name", "Resident name is required.")
             return
 
+        busy = self.begin_button_busy(getattr(self, "btn_save_resident", None), "Saving...")
         try:
             before_snapshot = None
             if self.selected_resident_id is None:
@@ -4888,6 +4971,8 @@ class DashboardWindow(QWidget):
 
         except Exception as e:
             self.show_error("Save failed", str(e))
+        finally:
+            self.end_button_busy(busy)
 
     def submit_resident_review_request(self):
         if not self.is_nurse():
@@ -4907,6 +4992,7 @@ class DashboardWindow(QWidget):
             return
 
         payload = self.collect_resident_payload()
+        busy = self.begin_button_busy(getattr(self, "btn_submit_review_request", None), "Submitting...")
         try:
             self.db.create_change_request(
                 self.selected_resident_id,
@@ -4940,6 +5026,8 @@ class DashboardWindow(QWidget):
             self.show_info("Submitted", "Review request sent to the admin queue.")
         except Exception as e:
             self.show_error("Submit failed", str(e))
+        finally:
+            self.end_button_busy(busy)
 
     def delete_selected_resident(self):
         if not self.can_edit_residents():
@@ -4966,6 +5054,7 @@ class DashboardWindow(QWidget):
 
         resident_id = self.selected_resident_id
         resident_uid = row.get("resident_uid")
+        busy = self.begin_button_busy(getattr(self, "btn_delete_resident", None), "Deleting...")
         try:
             self.db.delete_resident(resident_id)
             self.db.log_update(
@@ -4998,6 +5087,8 @@ class DashboardWindow(QWidget):
             self.show_info("Deleted", "Resident deleted successfully.")
         except Exception as e:
             self.show_error("Delete failed", str(e))
+        finally:
+            self.end_button_busy(busy)
 
     def send_saved_resident_if_paired(self):
         if not self.gateway_online:
@@ -5177,6 +5268,7 @@ class DashboardWindow(QWidget):
             self.show_error("Not found", "Resident record was not found.")
             return
 
+        busy = self.begin_button_busy(getattr(self, "btn_pair_selected", None), "Pairing...")
         try:
             self.selected_pair_resident_id = resident_id
             self.selected_pair_device_id = device_id
@@ -5198,6 +5290,8 @@ class DashboardWindow(QWidget):
             self.show_info("Paired", f"{row['full_name']} paired to {device_id}.")
         except Exception as e:
             self.show_error("Pair failed", str(e))
+        finally:
+            self.end_button_busy(busy)
 
     def push_resident_row_to_device(self, row, device_id, action_type):
         if not self.gateway_online:
@@ -5245,14 +5339,14 @@ class DashboardWindow(QWidget):
             if self.server_mode and hasattr(self.gateway, "send_resident_display") and row and row.get("id"):
                 result = self.gateway.send_resident_display(self.base_url(), row.get("id"), device_id)
                 success = result["status_code"] == 200
-                message = success_message if success else f"{label} failed ({result['status_code']})"
+                message = success_message if success else self.result_error_message(result, f"{label} failed.")
                 return success, message, result["body"]
 
             text_result = self.gateway.send_text(self.base_url(), payload)
             text_success = text_result["status_code"] == 200
             response = {"text": text_result["body"]}
             success = text_success
-            message = success_message if text_success else f"{label} text failed ({text_result['status_code']})"
+            message = success_message if text_success else self.result_error_message(text_result, f"{label} text failed.")
 
             if text_success and image_path and os.path.isfile(str(image_path)):
                 image_result = self.gateway.send_image(self.base_url(), device_id, str(image_path))
@@ -5262,13 +5356,13 @@ class DashboardWindow(QWidget):
                 message = (
                     f"{success_message}; resident photo sent"
                     if image_success
-                    else f"{label} photo failed ({image_result['status_code']})"
+                    else self.result_error_message(image_result, f"{label} photo failed.")
                 )
             elif text_success:
                 response["image"] = {"ok": True, "skipped": True, "reason": "No resident photo available"}
             return success, message, response
         except Exception as e:
-            return False, f"{label} queued for later review: {e}", {"error": str(e)}
+            return False, f"{label} could not finish. {friendly_error_message(str(e))}", {"error": str(e)}
 
     def unpair_selected_from_menu(self):
         if not self.require_network_for_write("Unpairing device"):
@@ -5278,6 +5372,7 @@ class DashboardWindow(QWidget):
         if not device_id:
             self.show_error("No device", "Select a device first.")
             return
+        busy = self.begin_button_busy(getattr(self, "btn_unpair_selected", None), "Unpairing...")
         try:
             self.selected_pair_device_id = device_id
             self.db.unpair_device(device_id)
@@ -5297,6 +5392,8 @@ class DashboardWindow(QWidget):
             self.show_info("Unpaired", f"{device_id} was unpaired.")
         except Exception as e:
             self.show_error("Unpair failed", str(e))
+        finally:
+            self.end_button_busy(busy)
 
     # ---------------------------- highlights ----------------------------
 
@@ -5536,10 +5633,11 @@ class DashboardWindow(QWidget):
 
         payload = self.build_gateway_payload(device_id)
 
+        busy = self.begin_button_busy(getattr(self, "btn_send_text", None), "Sending...")
         try:
             result = self.gateway.send_text(self.base_url(), payload)
             success = result["status_code"] == 200
-            message = "Text update sent successfully" if success else f"Text update failed ({result['status_code']})"
+            message = "Text update sent successfully" if success else self.result_error_message(result, "Text update failed.")
 
             self.db.log_update(
                 "send_text",
@@ -5560,7 +5658,7 @@ class DashboardWindow(QWidget):
             if success:
                 self.show_info("Success", message)
             else:
-                self.show_error("Send failed", f"{message}\n\n{result['body']}")
+                self.show_error("Send failed", message)
 
         except Exception as e:
             self.db.log_update(
@@ -5577,6 +5675,8 @@ class DashboardWindow(QWidget):
             )
             self.load_recent_logs()
             self.show_error("Network Error", str(e))
+        finally:
+            self.end_button_busy(busy)
 
     def send_lcd_command(self, command, device_id=None):
         if not self.require_network_for_write("Sending LCD command"):
@@ -5586,15 +5686,19 @@ class DashboardWindow(QWidget):
             self.show_error("No device", "Please select a paired device first.")
             return
         payload = {"device_id": device_id, "command": command}
+        button = self.btn_lcd_on if command == "on" else self.btn_lcd_off
+        busy = self.begin_button_busy(button, f"LCD {command.upper()}...")
         try:
             result = self.gateway.send_lcd_command(self.base_url(), device_id, command)
             success = result["status_code"] == 200
             response = result["body"]
-            message = f"LCD {command.upper()} command sent" if success else f"LCD command failed ({result['status_code']})"
+            message = f"LCD {command.upper()} command sent" if success else self.result_error_message(result, "LCD command failed.")
         except Exception as e:
             success = False
             response = {"error": str(e)}
-            message = f"LCD command queued for review: {e}"
+            message = f"LCD command could not be completed. {friendly_error_message(str(e))}"
+        finally:
+            self.end_button_busy(busy)
         self.db.log_update(
             "lcd_command",
             self.selected_resident_id,
@@ -5637,6 +5741,7 @@ class DashboardWindow(QWidget):
             "has_image": False,
             "device_ids": [d.get("device_id") for d in devices],
         }
+        busy = self.begin_button_busy(getattr(self, "btn_save_schedule", None), "Saving...")
         try:
             result = self.gateway.save_schedule(self.base_url(), payload)
             success = result["status_code"] == 200
@@ -5644,12 +5749,14 @@ class DashboardWindow(QWidget):
             message = (
                 f"Global LCD schedule saved for {len(devices)} device(s)."
                 if success
-                else f"Global LCD schedule failed ({result['status_code']})."
+                else self.result_error_message(result, "Global LCD schedule failed.")
             )
         except Exception as e:
             success = False
             responses = [{"device_id": "all", "error": str(e)}]
-            message = f"Global LCD schedule could not be saved: {e}"
+            message = f"Global LCD schedule could not be saved. {friendly_error_message(str(e))}"
+        finally:
+            self.end_button_busy(busy)
 
         self.db.log_update(
             "save_schedule",
@@ -5712,10 +5819,11 @@ class DashboardWindow(QWidget):
 
         payload = {"device_id": device_id, "image_path": self.selected_image_path}
 
+        busy = self.begin_button_busy(getattr(self, "btn_send_image", None), "Sending...")
         try:
             result = self.gateway.send_image(self.base_url(), device_id, self.selected_image_path)
             success = result["status_code"] == 200
-            message = "Image sent successfully" if success else f"Image send failed ({result['status_code']})"
+            message = "Image sent successfully" if success else self.result_error_message(result, "Image send failed.")
 
             self.db.log_update(
                 "send_image",
@@ -5736,7 +5844,7 @@ class DashboardWindow(QWidget):
             if success:
                 self.show_info("Success", message)
             else:
-                self.show_error("Send failed", f"{message}\n\n{result['body']}")
+                self.show_error("Send failed", message)
 
         except Exception as e:
             self.db.log_update(
@@ -5753,6 +5861,8 @@ class DashboardWindow(QWidget):
             )
             self.load_recent_logs()
             self.show_error("Network Error", str(e))
+        finally:
+            self.end_button_busy(busy)
 
     # ---------------------------- logs ----------------------------
 
