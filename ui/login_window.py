@@ -1,6 +1,6 @@
 from PyQt6 import QtCore, QtGui, QtWidgets
 
-from config import APP_NAME, ASSETS_DIR
+from config import APP_NAME, APP_VERSION, ASSETS_DIR
 from auth.auth_service import AuthService
 
 
@@ -190,6 +190,11 @@ class LoginWindow(QtWidgets.QWidget):
             }
         """)
         self.login_btn.clicked.connect(self.handle_login)
+
+        self.version_label = QtWidgets.QLabel(f"Demo v{APP_VERSION}", self.right_panel)
+        self.version_label.setGeometry(0, 548, 470, 22)
+        self.version_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignCenter)
+        self.version_label.setStyleSheet("color:#9ca3af;font-size:12px;font-weight:700;")
 
         self.close_btn = QtWidgets.QPushButton("X", self.container)
         self.close_btn.setGeometry(1090, 18, 38, 38)

@@ -17,7 +17,7 @@ from PyQt6.QtWidgets import (
     QInputDialog, QApplication
 )
 
-from config import APP_NAME, DEFAULT_PI_BASE_URL, ASSETS_DIR, ROLE_LABELS, APP_DATA_DIR
+from config import APP_NAME, APP_VERSION, DEFAULT_PI_BASE_URL, ASSETS_DIR, ROLE_LABELS, APP_DATA_DIR
 from auth.auth_service import AuthService
 from core.app_settings import APP_MODE_DEMO, APP_MODE_SERVER, AppSettingsStore
 from core.control_service_client import ControlServiceClient, friendly_error_message
@@ -607,6 +607,11 @@ class DashboardWindow(QWidget):
         self.btn_logout.setGeometry(18, 805, 208, 42)
         self.btn_logout.setStyleSheet(self.secondary_btn_style())
 
+        self.sidebar_version = QLabel(f"Demo v{APP_VERSION}", self.sidebar)
+        self.sidebar_version.setGeometry(18, 856, 208, 22)
+        self.sidebar_version.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.sidebar_version.setStyleSheet("font-size: 12px; color: #64748b; font-weight: 800;")
+
         # Title area
         self.title = QLabel(f"{APP_NAME} Control Center", self.container)
         self.title.setGeometry(280, 22, 850, 32)
@@ -615,6 +620,11 @@ class DashboardWindow(QWidget):
         self.subtitle = QLabel("Hospital-grade resident display operations, approvals, verification, and technical health", self.container)
         self.subtitle.setGeometry(280, 56, 860, 18)
         self.subtitle.setStyleSheet("font-size: 13px; color: #475569;")
+
+        self.version_badge = QLabel(f"Demo v{APP_VERSION}", self.container)
+        self.version_badge.setGeometry(1140, 56, 180, 24)
+        self.version_badge.setAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+        self.version_badge.setStyleSheet("font-size: 12px; color: #64748b; font-weight: 800;")
 
         self.base_url_edit = QLineEdit(self.container)
         self.base_url_edit.setGeometry(0, 0, 1, 1)
@@ -748,6 +758,7 @@ class DashboardWindow(QWidget):
         if self.btn_profile_settings.isVisible():
             controls.append((self.btn_profile_settings, 42, 10))
         controls.append((self.btn_logout, 42, 0))
+        controls.append((self.sidebar_version, 22, 0))
 
         controls_height = sum(height + gap for _widget, height, gap in controls)
         controls_y = max(nav_y + 14, sidebar_h - controls_height - 18)
@@ -761,6 +772,7 @@ class DashboardWindow(QWidget):
         self.close_btn.move(right, 24)
         self.max_btn.move(right - 45, 24)
         self.min_btn.move(right - 90, 24)
+        self.version_badge.setGeometry(max(280, right - 280), 56, 230, 24)
         self.base_url_edit.setVisible(False)
 
         available_width = max(640, self.container.width() - 302)

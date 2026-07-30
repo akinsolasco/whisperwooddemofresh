@@ -1,7 +1,7 @@
 import subprocess
 from PyQt6 import QtCore, QtGui, QtWidgets
 
-from config import APP_NAME, ASSETS_DIR
+from config import APP_NAME, APP_VERSION, ASSETS_DIR
 from core.updater import UpdaterService
 
 
@@ -95,6 +95,11 @@ class SplashScreen(QtWidgets.QWidget):
         else:
             self.logo.setText(APP_NAME)
             self.logo.setStyleSheet("color:#e2ab09;font-size:28px;font-weight:700;")
+
+        self.version_label = QtWidgets.QLabel(f"Demo v{APP_VERSION}", self.container)
+        self.version_label.setGeometry(592, 18, 140, 22)
+        self.version_label.setAlignment(QtCore.Qt.AlignmentFlag.AlignRight | QtCore.Qt.AlignmentFlag.AlignVCenter)
+        self.version_label.setStyleSheet("color:#a7a7a7;font-size:12px;font-weight:700;")
 
         self.spinner = SafeSpinner(self.container)
         self.spinner.setGeometry(320, 158, 120, 120)
