@@ -1,0 +1,62 @@
+name: Build and Release Enhanced Living Demo App
+
+on:
+  push:
+    branches: [ "main" ]
+    tags:
+      - "demo-v*"
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+          pip install pyinstaller pillow
+
+      - name: Verify icon exists
+        shell: powershell
+        run: |
+          if (!(Test-Path "assets/enhanced_living_whisperwood_icon.ico")) {
+            Write-Error "Missing assets/enhanced_living_whisperwood_icon.ico"
+          }
+
+      - name: Build app with PyInstaller
+        run: |
+          pyinstaller --noconfirm --windowed --onedir --name WhisperwoodDemo --icon assets/enhanced_living_whisperwood_icon.ico --add-data "assets;assets" main.py
+
+      - name: Install Inno Setup
+        shell: powershell
+        run: |
+          choco install innosetup -y
+
+      - name: Build installer
+        shell: powershell
+        run: |
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+
+      - name: Upload installer artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: WhisperwoodDemo-installer
+          path: dist_installer/WhisperwoodDemoSetup.exe
+
+      - name: Create GitHub Release
+        if: startsWith(github.ref, 'refs/tags/demo-v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist_installer/WhisperwoodVillaSetup.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

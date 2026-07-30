@@ -1,0 +1,32 @@
+# Python generated files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environments
+venv/
+.venv/
+env/
+
+# Local app/runtime data
+data/
+updates/
+images/
+*.sqlite3
+*.sqlite
+*.db
+activity-logs.pdf
+
+# Local IDE/editor files
+.idea/
+.vscode/
+
+# Build outputs
+build/
+dist/
+*.spec
+
+# Logs and temporary files
+*.log
+*.tmp
+*.bak
