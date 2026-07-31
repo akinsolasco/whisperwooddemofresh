@@ -23,6 +23,18 @@ class Device:
     last_seen_s: int
     battery_level: Optional[int] = None
     online: Optional[bool] = None
+    battery_ok: Optional[bool] = None
+    battery_mv: Optional[int] = None
+    battery_voltage: Optional[float] = None
+    battery_raw_percent: Optional[float] = None
+    battery_low: Optional[bool] = None
+    battery_alert: Optional[bool] = None
+    battery_plugged: Optional[bool] = None
+    battery_charging: Optional[bool] = None
+    battery_full: Optional[bool] = None
+    rssi: Optional[int] = None
+    heap: Optional[int] = None
+    last_status_at: Optional[str] = None
 
     @property
     def is_online(self) -> bool:

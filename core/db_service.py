@@ -195,7 +195,22 @@ class DatabaseService:
                 created_at TIMESTAMP NOT NULL DEFAULT NOW()
             );
             """)
-            cur.execute("ALTER TABLE device_registry ADD COLUMN IF NOT EXISTS battery_level INTEGER")
+            for column_sql in [
+                "ALTER TABLE device_registry ADD COLUMN IF NOT EXISTS battery_level INTEGER",
+                "ALTER TABLE device_registry ADD COLUMN IF NOT EXISTS battery_ok BOOLEAN",
+                "ALTER TABLE device_registry ADD COLUMN IF NOT EXISTS battery_mv INTEGER",
+                "ALTER TABLE device_registry ADD COLUMN IF NOT EXISTS battery_voltage REAL",
+                "ALTER TABLE device_registry ADD COLUMN IF NOT EXISTS battery_raw_percent REAL",
+                "ALTER TABLE device_registry ADD COLUMN IF NOT EXISTS battery_low BOOLEAN",
+                "ALTER TABLE device_registry ADD COLUMN IF NOT EXISTS battery_alert BOOLEAN",
+                "ALTER TABLE device_registry ADD COLUMN IF NOT EXISTS battery_plugged BOOLEAN",
+                "ALTER TABLE device_registry ADD COLUMN IF NOT EXISTS battery_charging BOOLEAN",
+                "ALTER TABLE device_registry ADD COLUMN IF NOT EXISTS battery_full BOOLEAN",
+                "ALTER TABLE device_registry ADD COLUMN IF NOT EXISTS rssi INTEGER",
+                "ALTER TABLE device_registry ADD COLUMN IF NOT EXISTS heap INTEGER",
+                "ALTER TABLE device_registry ADD COLUMN IF NOT EXISTS last_status_at TEXT",
+            ]:
+                cur.execute(column_sql)
         else:
             cur.execute("""
             CREATE TABLE IF NOT EXISTS residents (
@@ -244,8 +259,24 @@ class DatabaseService:
             );
             """)
             device_columns = {row["name"] for row in cur.execute("PRAGMA table_info(device_registry)").fetchall()}
-            if "battery_level" not in device_columns:
-                cur.execute("ALTER TABLE device_registry ADD COLUMN battery_level INTEGER")
+            extra_device_columns = {
+                "battery_level": "INTEGER",
+                "battery_ok": "INTEGER",
+                "battery_mv": "INTEGER",
+                "battery_voltage": "REAL",
+                "battery_raw_percent": "REAL",
+                "battery_low": "INTEGER",
+                "battery_alert": "INTEGER",
+                "battery_plugged": "INTEGER",
+                "battery_charging": "INTEGER",
+                "battery_full": "INTEGER",
+                "rssi": "INTEGER",
+                "heap": "INTEGER",
+                "last_status_at": "TEXT",
+            }
+            for name, col_type in extra_device_columns.items():
+                if name not in device_columns:
+                    cur.execute(f"ALTER TABLE device_registry ADD COLUMN {name} {col_type}")
             cur.execute("""
             CREATE TABLE IF NOT EXISTS display_updates (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -674,9 +705,12 @@ class DatabaseService:
             if self.backend == "postgres":
                 cur.execute("""
                     INSERT INTO device_registry (
-                        device_id, ip, port, fw, last_seen_s, is_online, battery_level, last_sync_at, updated_at
+                        device_id, ip, port, fw, last_seen_s, is_online, battery_level,
+                        battery_ok, battery_mv, battery_voltage, battery_raw_percent, battery_low, battery_alert,
+                        battery_plugged, battery_charging, battery_full, rssi, heap, last_status_at,
+                        last_sync_at, updated_at
                     )
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
                     ON CONFLICT (device_id)
                     DO UPDATE SET
                         ip = EXCLUDED.ip,
@@ -685,15 +719,34 @@ class DatabaseService:
                         last_seen_s = EXCLUDED.last_seen_s,
                         is_online = EXCLUDED.is_online,
                         battery_level = EXCLUDED.battery_level,
+                        battery_ok = EXCLUDED.battery_ok,
+                        battery_mv = EXCLUDED.battery_mv,
+                        battery_voltage = EXCLUDED.battery_voltage,
+                        battery_raw_percent = EXCLUDED.battery_raw_percent,
+                        battery_low = EXCLUDED.battery_low,
+                        battery_alert = EXCLUDED.battery_alert,
+                        battery_plugged = EXCLUDED.battery_plugged,
+                        battery_charging = EXCLUDED.battery_charging,
+                        battery_full = EXCLUDED.battery_full,
+                        rssi = EXCLUDED.rssi,
+                        heap = EXCLUDED.heap,
+                        last_status_at = EXCLUDED.last_status_at,
                         last_sync_at = NOW(),
                         updated_at = NOW()
-                """, (d.id, d.ip, d.port, d.fw, d.last_seen_s, bool(d.is_online), d.battery_level))
+                """, (
+                    d.id, d.ip, d.port, d.fw, d.last_seen_s, bool(d.is_online), d.battery_level,
+                    d.battery_ok, d.battery_mv, d.battery_voltage, d.battery_raw_percent, d.battery_low, d.battery_alert,
+                    d.battery_plugged, d.battery_charging, d.battery_full, d.rssi, d.heap, d.last_status_at,
+                ))
             else:
                 cur.execute("""
                     INSERT INTO device_registry (
-                        device_id, ip, port, fw, last_seen_s, is_online, battery_level, last_sync_at, updated_at
+                        device_id, ip, port, fw, last_seen_s, is_online, battery_level,
+                        battery_ok, battery_mv, battery_voltage, battery_raw_percent, battery_low, battery_alert,
+                        battery_plugged, battery_charging, battery_full, rssi, heap, last_status_at,
+                        last_sync_at, updated_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     ON CONFLICT(device_id)
                     DO UPDATE SET
                         ip = excluded.ip,
@@ -702,9 +755,31 @@ class DatabaseService:
                         last_seen_s = excluded.last_seen_s,
                         is_online = excluded.is_online,
                         battery_level = excluded.battery_level,
+                        battery_ok = excluded.battery_ok,
+                        battery_mv = excluded.battery_mv,
+                        battery_voltage = excluded.battery_voltage,
+                        battery_raw_percent = excluded.battery_raw_percent,
+                        battery_low = excluded.battery_low,
+                        battery_alert = excluded.battery_alert,
+                        battery_plugged = excluded.battery_plugged,
+                        battery_charging = excluded.battery_charging,
+                        battery_full = excluded.battery_full,
+                        rssi = excluded.rssi,
+                        heap = excluded.heap,
+                        last_status_at = excluded.last_status_at,
                         last_sync_at = CURRENT_TIMESTAMP,
                         updated_at = CURRENT_TIMESTAMP
-                """, (d.id, d.ip, d.port, d.fw, d.last_seen_s, int(bool(d.is_online)), d.battery_level))
+                """, (
+                    d.id, d.ip, d.port, d.fw, d.last_seen_s, int(bool(d.is_online)), d.battery_level,
+                    int(bool(d.battery_ok)) if d.battery_ok is not None else None,
+                    d.battery_mv, d.battery_voltage, d.battery_raw_percent,
+                    int(bool(d.battery_low)) if d.battery_low is not None else None,
+                    int(bool(d.battery_alert)) if d.battery_alert is not None else None,
+                    int(bool(d.battery_plugged)) if d.battery_plugged is not None else None,
+                    int(bool(d.battery_charging)) if d.battery_charging is not None else None,
+                    int(bool(d.battery_full)) if d.battery_full is not None else None,
+                    d.rssi, d.heap, d.last_status_at,
+                ))
         self.conn.commit()
         cur.close()
 

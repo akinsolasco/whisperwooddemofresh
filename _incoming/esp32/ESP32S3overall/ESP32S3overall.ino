@@ -3,6 +3,7 @@
 #include <Preferences.h>
 #include <FS.h>
 #include <LittleFS.h>
+#include <Wire.h>
 #include "esp_heap_caps.h"
 #include <LovyanGFX.hpp>
 
@@ -17,10 +18,12 @@ static const char* DEFAULT_WIFI_SSID = "EPD-GATEWAY";
 static const char* DEFAULT_WIFI_PASS = "epaper123";
 static const char* DEFAULT_PI_HOST = "192.168.4.1";
 static const uint16_t DEFAULT_PI_PORT = 5000;
+static const uint8_t FIRMWARE_VERSION = 6;
 static const uint32_t WIFI_RETRY_MS = 15000;
 static const uint32_t WIFI_CONNECT_GRACE_MS = 20000;
 static const uint32_t PI_RETRY_MS = 3000;
 static const uint32_t STATUS_INTERVAL_MS = 5000;
+static const uint8_t BATTERY_LOW_THRESHOLD_PERCENT = 20;
 
 char gWifiSsid[64] = "EPD-GATEWAY";
 char gWifiPass[96] = "epaper123";
@@ -35,9 +38,26 @@ static unsigned long gLastWifiAttemptMs = 0;
 static unsigned long gLastPiAttemptMs = 0;
 static wl_status_t gLastWifiStatus = WL_IDLE_STATUS;
 static bool gPiSessionOnline = false;
+static bool gBatteryGaugeReady = false;
 
-// ================= LCD FROM YOUR UPLOADED CODE =================
-#define LCD_BL_PIN 48
+// ================= VERIFIED SMART LABEL PIN MAP =================
+// Shared SPI bus: LCD and e-paper use the same SCLK/MOSI. Only one CS is active at a time.
+#define SHARED_SPI_SCLK_PIN 12
+#define SHARED_SPI_MOSI_PIN 11
+
+#define LCD_CS_PIN 10
+#define LCD_DC_PIN 9
+#define LCD_RST_PIN 8
+#define LCD_BL_PIN 13
+
+#define BAT_I2C_SDA_PIN 2
+#define BAT_I2C_SCL_PIN 3
+#define BAT_LOW_ALERT_PIN 4
+#define BAT_PLUG_IND_PIN 6
+#define BAT_CHG_IND_PIN 7
+#define LED_FULL_PIN 47
+#define LED_LOW_PIN 48
+#define MAX17048_ADDR 0x36
 
 class LGFX : public lgfx::LGFX_Device {
   lgfx::Panel_ILI9341 _panel;
@@ -46,20 +66,20 @@ class LGFX : public lgfx::LGFX_Device {
 public:
   LGFX() {
     auto cfg = _bus.config();
-    cfg.spi_host = SPI3_HOST;  // separate from e-paper bus
+    cfg.spi_host = SPI3_HOST;
     cfg.spi_mode = 0;
     cfg.freq_write = 10000000;
     cfg.freq_read = 6000000;
-    cfg.pin_sclk = 18;  // LCD SCK
-    cfg.pin_mosi = 17;  // LCD MOSI
-    cfg.pin_miso = -1;  // not used
-    cfg.pin_dc = 15;    // LCD DC
+    cfg.pin_sclk = SHARED_SPI_SCLK_PIN;
+    cfg.pin_mosi = SHARED_SPI_MOSI_PIN;
+    cfg.pin_miso = -1;
+    cfg.pin_dc = LCD_DC_PIN;
     _bus.config(cfg);
     _panel.setBus(&_bus);
 
     auto pcfg = _panel.config();
-    pcfg.pin_cs = 16;   // LCD CS
-    pcfg.pin_rst = 21;  // LCD RST
+    pcfg.pin_cs = LCD_CS_PIN;
+    pcfg.pin_rst = LCD_RST_PIN;
     pcfg.pin_busy = -1;
     pcfg.panel_width = 240;
     pcfg.panel_height = 320;
@@ -177,6 +197,112 @@ static bool sendRawToPi(const char* text) {
     return false;
   }
   return true;
+}
+
+// ================= BATTERY / CHARGER TELEMETRY =================
+struct BatteryTelemetry {
+  bool ok;
+  int percent;
+  int rawPercentX10;
+  int millivolts;
+  bool low;
+  bool alertPinLow;
+  bool usbPresent;
+  bool charging;
+  bool full;
+};
+
+static bool max17048Read16(uint8_t reg, uint16_t* out) {
+  if (!out) return false;
+  Wire.beginTransmission(MAX17048_ADDR);
+  Wire.write(reg);
+  if (Wire.endTransmission(false) != 0) {
+    return false;
+  }
+  uint8_t count = Wire.requestFrom((uint8_t)MAX17048_ADDR, (uint8_t)2);
+  if (count != 2) {
+    return false;
+  }
+  *out = ((uint16_t)Wire.read() << 8) | (uint16_t)Wire.read();
+  return true;
+}
+
+static bool max17048Write16(uint8_t reg, uint16_t value) {
+  Wire.beginTransmission(MAX17048_ADDR);
+  Wire.write(reg);
+  Wire.write((uint8_t)(value >> 8));
+  Wire.write((uint8_t)(value & 0xFF));
+  return Wire.endTransmission() == 0;
+}
+
+static void configureBatteryAlertThreshold(uint8_t thresholdPercent) {
+  if (!gBatteryGaugeReady) return;
+  if (thresholdPercent > 31) thresholdPercent = 31;
+  uint16_t config = 0;
+  if (!max17048Read16(0x0C, &config)) {
+    return;
+  }
+  uint8_t athd = 32 - thresholdPercent;
+  config = (config & 0xFFE0) | (athd & 0x1F);
+  max17048Write16(0x0C, config);
+}
+
+static void updateBatteryLeds(bool low, bool full) {
+  digitalWrite(LED_LOW_PIN, low ? HIGH : LOW);
+  digitalWrite(LED_FULL_PIN, full ? HIGH : LOW);
+}
+
+static BatteryTelemetry readBatteryTelemetry() {
+  BatteryTelemetry b;
+  b.ok = false;
+  b.percent = -1;
+  b.rawPercentX10 = -1;
+  b.millivolts = -1;
+  b.alertPinLow = digitalRead(BAT_LOW_ALERT_PIN) == LOW;
+  b.usbPresent = digitalRead(BAT_PLUG_IND_PIN) == LOW;
+  b.charging = digitalRead(BAT_CHG_IND_PIN) == LOW;
+  b.low = b.alertPinLow;
+  b.full = false;
+
+  if (gBatteryGaugeReady) {
+    uint16_t vcellRaw = 0;
+    uint16_t socRaw = 0;
+    if (max17048Read16(0x02, &vcellRaw) && max17048Read16(0x04, &socRaw)) {
+      float volts = (float)vcellRaw * 0.000078125f;
+      float percentRaw = (float)socRaw / 256.0f;
+      int percentRounded = (int)(percentRaw + 0.5f);
+      if (percentRounded < 0) percentRounded = 0;
+      if (percentRounded > 100) percentRounded = 100;
+      b.ok = true;
+      b.percent = percentRounded;
+      b.rawPercentX10 = (int)(percentRaw * 10.0f + 0.5f);
+      b.millivolts = (int)(volts * 1000.0f + 0.5f);
+      b.low = b.alertPinLow || b.percent <= BATTERY_LOW_THRESHOLD_PERCENT;
+      b.full = b.usbPresent && !b.charging && b.percent >= 95;
+    }
+  }
+
+  updateBatteryLeds(b.low, b.full);
+  return b;
+}
+
+static void initBatteryMonitor() {
+  pinMode(BAT_LOW_ALERT_PIN, INPUT_PULLUP);
+  pinMode(BAT_PLUG_IND_PIN, INPUT_PULLUP);
+  pinMode(BAT_CHG_IND_PIN, INPUT_PULLUP);
+  pinMode(LED_FULL_PIN, OUTPUT);
+  pinMode(LED_LOW_PIN, OUTPUT);
+  updateBatteryLeds(false, false);
+
+  Wire.begin(BAT_I2C_SDA_PIN, BAT_I2C_SCL_PIN);
+  Wire.setClock(400000);
+
+  uint16_t version = 0;
+  gBatteryGaugeReady = max17048Read16(0x08, &version);
+  Serial.print("[BAT] MAX17048 ");
+  Serial.println(gBatteryGaugeReady ? "ready" : "not detected");
+  configureBatteryAlertThreshold(BATTERY_LOW_THRESHOLD_PERCENT);
+  readBatteryTelemetry();
 }
 
 // ================= BASIC HELPERS =================
@@ -624,6 +750,7 @@ static void displayFromData(const DisplayData& d) {
   if (gLcdImageStored) {
     releaseLcdImageBuffer();
   }
+  digitalWrite(LCD_CS_PIN, HIGH);
 
   stage("epaper: init");
   EPD_3IN6E_Init();
@@ -686,6 +813,7 @@ static void displayFromData(const DisplayData& d) {
 // ================= LCD DISPLAY =================
 static void initLCD() {
   stage("lcd: init");
+  digitalWrite(EPD_CS_PIN, HIGH);
   tft.init();
   tft.setRotation(1);
   tft.setSwapBytes(true);
@@ -850,6 +978,7 @@ static bool receiveExactBytes(uint8_t* dst, size_t totalBytes, uint32_t timeoutM
 
 static void displayLCDImage565(const uint16_t* img565) {
   setLcdPower(true);
+  digitalWrite(EPD_CS_PIN, HIGH);
   stage("lcd: pushImage");
   tft.fillScreen(TFT_BLACK);
   tft.pushImage(0, 0, LCD_IMG_W, LCD_IMG_H, img565);
@@ -1169,7 +1298,9 @@ static void handleSerialProvisioning() {
 static void announceSerialProvisioningReady() {
   Serial.print("WWREADY id=");
   Serial.print(DEVICE_ID);
-  Serial.print(" fw=5 ssid=");
+  Serial.print(" fw=");
+  Serial.print(FIRMWARE_VERSION);
+  Serial.print(" ssid=");
   Serial.print(gWifiSsid);
   Serial.print(" pi=");
   Serial.print(gPiHost);
@@ -1271,7 +1402,7 @@ static bool connectToPi() {
   }
 
   char hello[96];
-  snprintf(hello, sizeof(hello), "HELLO id=%s fw=5\n", DEVICE_ID);
+  snprintf(hello, sizeof(hello), "HELLO id=%s fw=%u\n", DEVICE_ID, (unsigned)FIRMWARE_VERSION);
   if (!sendRawToPi(hello)) {
     stage("tcp: hello failed");
     return false;
@@ -1395,12 +1526,22 @@ static void sendStatusIfDue() {
   if (millis() - lastStatusMs < STATUS_INTERVAL_MS) return;
   lastStatusMs = millis();
 
+  BatteryTelemetry battery = readBatteryTelemetry();
   String ipText = WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "-";
-  char line[192];
+  char line[320];
   snprintf(
     line,
     sizeof(line),
-    "STATUS battery=-1 heap=%u wifi=%s ip=%s rssi=%d lcd_image=%d uptime_ms=%lu\n",
+    "STATUS battery=%d battery_ok=%d battery_mv=%d battery_raw_x10=%d battery_low=%d battery_alert=%d battery_plugged=%d battery_charging=%d battery_full=%d heap=%u wifi=%s ip=%s rssi=%d lcd_image=%d uptime_ms=%lu\n",
+    battery.percent,
+    battery.ok ? 1 : 0,
+    battery.millivolts,
+    battery.rawPercentX10,
+    battery.low ? 1 : 0,
+    battery.alertPinLow ? 1 : 0,
+    battery.usbPresent ? 1 : 0,
+    battery.charging ? 1 : 0,
+    battery.full ? 1 : 0,
     (unsigned)ESP.getFreeHeap(),
     WiFi.status() == WL_CONNECTED ? "connected" : "offline",
     ipText.c_str(),
@@ -1443,8 +1584,13 @@ void setup() {
   serviceSerialProvisioningWindow(5000);
 
   printHeap("boot");
+  initBatteryMonitor();
 
   // LCD init
+  pinMode(LCD_CS_PIN, OUTPUT);
+  digitalWrite(LCD_CS_PIN, HIGH);
+  pinMode(EPD_CS_PIN, OUTPUT);
+  digitalWrite(EPD_CS_PIN, HIGH);
   pinMode(LCD_BL_PIN, OUTPUT);
   setLcdPower(false);
   initLCD();

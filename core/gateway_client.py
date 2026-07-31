@@ -30,6 +30,18 @@ class GatewayClient:
                 last_seen_s=int(d.get("last_seen_s", 9999)),
                 battery_level=d.get("battery_level"),
                 online=d.get("is_online", d.get("online")),
+                battery_ok=d.get("battery_ok"),
+                battery_mv=d.get("battery_mv"),
+                battery_voltage=d.get("battery_voltage"),
+                battery_raw_percent=d.get("battery_raw_percent"),
+                battery_low=d.get("battery_low"),
+                battery_alert=d.get("battery_alert"),
+                battery_plugged=d.get("battery_plugged"),
+                battery_charging=d.get("battery_charging"),
+                battery_full=d.get("battery_full"),
+                rssi=d.get("rssi"),
+                heap=d.get("heap"),
+                last_status_at=d.get("last_status_at"),
             ))
         return devices
 

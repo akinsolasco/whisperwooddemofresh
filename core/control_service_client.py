@@ -285,6 +285,16 @@ class ControlServiceClient:
                 return last
         return last or self._result(False, "/resident-dropdown-options", error="Dropdown options endpoint is not available.")
 
+    def get_battery_alert_settings(self) -> Dict[str, Any]:
+        return self._request("GET", "/battery-alert-settings")
+
+    def save_battery_alert_settings(self, settings: Dict[str, Any]) -> Dict[str, Any]:
+        payload = dict(settings or {})
+        primary = self._request("PUT", "/battery-alert-settings", payload)
+        if primary.get("ok") or primary.get("status_code") not in {404, 405}:
+            return primary
+        return self._request("POST", "/battery-alert-settings", payload)
+
     def get_dashboard_summary(self) -> Dict[str, Any]:
         return self._request("GET", "/dashboard/summary")
 

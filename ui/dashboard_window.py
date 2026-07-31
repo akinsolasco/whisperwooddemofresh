@@ -13,7 +13,7 @@ from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QFrame, QLabel, QPushButton, QLineEdit, QTextEdit,
     QComboBox, QCheckBox, QListWidget, QListWidgetItem, QMessageBox,
     QFileDialog, QStackedWidget, QTableWidget, QTableWidgetItem, QHeaderView,
-    QDialog, QHBoxLayout, QTimeEdit, QAbstractSpinBox, QScrollArea, QStyle, QMenu,
+    QDialog, QHBoxLayout, QTimeEdit, QAbstractSpinBox, QScrollArea, QStyle, QMenu, QSpinBox,
     QInputDialog, QApplication
 )
 
@@ -50,6 +50,8 @@ class DashboardWindow(QWidget):
         self.gateway_online = False
         self.control_service_online = False
         self.control_last_results: Dict[str, Dict[str, Any]] = {}
+        self.battery_alert_settings = self.default_battery_alert_settings()
+        self.battery_alert_last_popup: Dict[str, float] = {}
 
         self.drag_pos = None
         self.normal_geometry = None
@@ -111,6 +113,7 @@ class DashboardWindow(QWidget):
         self.control_status_timer.start()
         QTimer.singleShot(0, self.position_window_controls)
         QTimer.singleShot(200, self.refresh_control_connection_status)
+        QTimer.singleShot(650, lambda: self.load_battery_alert_settings())
         if self.current_user.get("password_must_change"):
             QTimer.singleShot(300, self.show_required_password_change)
         elif self.current_user.get("force_password_change_warning"):
@@ -156,6 +159,82 @@ class DashboardWindow(QWidget):
 
     def can_view_technical(self) -> bool:
         return self.current_role == "IT_ADMIN"
+
+    # ---------------------------- battery alert policy ----------------------------
+
+    def default_battery_alert_settings(self) -> Dict[str, Any]:
+        return {
+            "enabled": True,
+            "low_threshold": 20,
+            "critical_threshold": 10,
+            "popup_cooldown_minutes": 30,
+            "recipient_roles": ["IT_ADMIN"],
+        }
+
+    def normalize_battery_alert_settings(self, raw: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        settings = self.default_battery_alert_settings()
+        if isinstance(raw, dict):
+            settings.update(raw)
+        try:
+            settings["low_threshold"] = max(1, min(100, int(settings.get("low_threshold", 20))))
+        except Exception:
+            settings["low_threshold"] = 20
+        try:
+            settings["critical_threshold"] = max(1, min(settings["low_threshold"], int(settings.get("critical_threshold", 10))))
+        except Exception:
+            settings["critical_threshold"] = 10
+        try:
+            settings["popup_cooldown_minutes"] = max(1, min(1440, int(settings.get("popup_cooldown_minutes", 30))))
+        except Exception:
+            settings["popup_cooldown_minutes"] = 30
+        roles = settings.get("recipient_roles") or ["IT_ADMIN"]
+        if isinstance(roles, str):
+            roles = [r.strip() for r in roles.split(",")]
+        normalized_roles = []
+        for role in roles:
+            key = self.normalize_role(role)
+            if key in {"IT_ADMIN", "NURSE_ADMIN", "NURSE", "VERIFIER"} and key not in normalized_roles:
+                normalized_roles.append(key)
+        settings["recipient_roles"] = normalized_roles or ["IT_ADMIN"]
+        settings["enabled"] = bool(settings.get("enabled", True))
+        return settings
+
+    def role_allows_battery_popup(self) -> bool:
+        settings = self.normalize_battery_alert_settings(self.battery_alert_settings)
+        return settings.get("enabled", True) and self.current_role in set(settings.get("recipient_roles") or [])
+
+    def truthy(self, value) -> bool:
+        if isinstance(value, bool):
+            return value
+        if value is None:
+            return False
+        return str(value).strip().lower() in {"1", "true", "yes", "y", "on", "ok"}
+
+    def battery_display_text(self, device: Dict[str, Any], compact: bool = False) -> str:
+        level = device.get("battery_level")
+        if level is None or level == "":
+            return "N/A"
+        text = f"{level}%"
+        voltage = device.get("battery_voltage")
+        if voltage not in (None, "") and not compact:
+            try:
+                text += f" | {float(voltage):.2f}V"
+            except Exception:
+                pass
+        if self.truthy(device.get("battery_low")):
+            text += " | LOW" if not compact else " low"
+        return text
+
+    def power_state_text(self, device: Dict[str, Any]) -> str:
+        if self.truthy(device.get("battery_full")):
+            return "Fully charged"
+        if self.truthy(device.get("battery_charging")):
+            return "Charging"
+        if self.truthy(device.get("battery_plugged")):
+            return "Plugged in"
+        if device.get("battery_ok") is False or str(device.get("battery_ok")).lower() == "false":
+            return "Gauge not detected"
+        return "On battery"
 
     # ---------------------------- styles ----------------------------
 
@@ -204,7 +283,7 @@ class DashboardWindow(QWidget):
 
     def input_style(self):
         return """
-            QLineEdit, QTextEdit, QComboBox, QTimeEdit {
+            QLineEdit, QTextEdit, QComboBox, QTimeEdit, QSpinBox {
                 background-color: #ffffff;
                 color: #0f172a;
                 border: 1px solid #cbd5e1;
@@ -212,10 +291,10 @@ class DashboardWindow(QWidget):
                 padding: 10px 12px;
                 font-size: 14px;
             }
-            QLineEdit:focus, QTextEdit:focus, QComboBox:focus, QTimeEdit:focus {
+            QLineEdit:focus, QTextEdit:focus, QComboBox:focus, QTimeEdit:focus, QSpinBox:focus {
                 border: 1px solid #0f766e;
             }
-            QLineEdit:disabled, QTextEdit:disabled, QComboBox:disabled, QTimeEdit:disabled {
+            QLineEdit:disabled, QTextEdit:disabled, QComboBox:disabled, QTimeEdit:disabled, QSpinBox:disabled {
                 background-color: #f1f5f9;
                 color: #94a3b8;
                 border: 1px solid #d8e1ea;
@@ -224,6 +303,29 @@ class DashboardWindow(QWidget):
 
     def label_style(self):
         return "font-size: 13px; font-weight: 700; color: #334155; background: transparent; border: none;"
+
+    def checkbox_style(self):
+        return """
+            QCheckBox {
+                color: #0f172a;
+                font-size: 13px;
+                font-weight: 700;
+                spacing: 8px;
+                background: transparent;
+                border: none;
+            }
+            QCheckBox::indicator {
+                width: 18px;
+                height: 18px;
+                border-radius: 5px;
+                border: 1px solid #94a3b8;
+                background-color: #ffffff;
+            }
+            QCheckBox::indicator:checked {
+                background-color: #0f766e;
+                border: 1px solid #0f766e;
+            }
+        """
 
     def dropdown_options_file(self):
         return APP_DATA_DIR / "resident_dropdown_options.json"
@@ -1775,6 +1877,7 @@ class DashboardWindow(QWidget):
         elif index == 1:
             self.load_control_services()
         elif index == 2:
+            self.load_battery_alert_settings(timeout=3.0)
             self.load_control_devices()
         elif index == 5:
             self.load_it_audit_logs()
@@ -2049,16 +2152,83 @@ class DashboardWindow(QWidget):
         message.setStyleSheet("font-size: 13px; color: #475569; font-weight: 700;")
 
         self.it_device_table = QTableWidget(page)
-        self.it_device_table.setGeometry(0, 210, 955, 330)
-        self.it_device_table.setColumnCount(7)
-        self.it_device_table.setHorizontalHeaderLabels(["Device", "Online", "IP", "Port", "FW", "Battery", "Last Seen"])
+        self.it_device_table.setGeometry(0, 205, 955, 250)
+        self.it_device_table.setColumnCount(8)
+        self.it_device_table.setHorizontalHeaderLabels(["Device", "Online", "IP", "Port", "FW", "Battery", "Power", "Last Seen"])
         self.it_device_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         self.it_device_table.verticalHeader().setVisible(False)
         self.it_device_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         self.it_device_table.setStyleSheet(self.table_style())
 
+        battery_panel = QFrame(page)
+        battery_panel.setGeometry(0, 475, 955, 138)
+        self.apply_frame_style(battery_panel, self.card_style())
+
+        battery_title = QLabel("Battery Alert Policy", battery_panel)
+        battery_title.setGeometry(22, 16, 230, 24)
+        battery_title.setStyleSheet("font-size: 18px; font-weight: 800; color: #0f172a;")
+
+        self.chk_battery_alert_enabled = QCheckBox("Enable popups", battery_panel)
+        self.chk_battery_alert_enabled.setGeometry(22, 52, 145, 26)
+        self.chk_battery_alert_enabled.setStyleSheet(self.checkbox_style())
+
+        low_label = QLabel("Low at", battery_panel)
+        low_label.setGeometry(178, 48, 75, 18)
+        low_label.setStyleSheet(self.label_style())
+        self.spin_battery_low = QSpinBox(battery_panel)
+        self.spin_battery_low.setGeometry(178, 70, 92, 38)
+        self.spin_battery_low.setRange(1, 100)
+        self.spin_battery_low.setSuffix("%")
+        self.spin_battery_low.setStyleSheet(self.input_style())
+
+        critical_label = QLabel("Critical at", battery_panel)
+        critical_label.setGeometry(288, 48, 95, 18)
+        critical_label.setStyleSheet(self.label_style())
+        self.spin_battery_critical = QSpinBox(battery_panel)
+        self.spin_battery_critical.setGeometry(288, 70, 92, 38)
+        self.spin_battery_critical.setRange(1, 100)
+        self.spin_battery_critical.setSuffix("%")
+        self.spin_battery_critical.setStyleSheet(self.input_style())
+
+        cooldown_label = QLabel("Popup cooldown", battery_panel)
+        cooldown_label.setGeometry(398, 48, 130, 18)
+        cooldown_label.setStyleSheet(self.label_style())
+        self.spin_battery_cooldown = QSpinBox(battery_panel)
+        self.spin_battery_cooldown.setGeometry(398, 70, 122, 38)
+        self.spin_battery_cooldown.setRange(1, 1440)
+        self.spin_battery_cooldown.setSuffix(" min")
+        self.spin_battery_cooldown.setStyleSheet(self.input_style())
+
+        role_label = QLabel("Notify", battery_panel)
+        role_label.setGeometry(540, 48, 70, 18)
+        role_label.setStyleSheet(self.label_style())
+        self.chk_battery_role_it = QCheckBox("IT Admin", battery_panel)
+        self.chk_battery_role_it.setGeometry(540, 70, 95, 26)
+        self.chk_battery_role_admin = QCheckBox("Admin", battery_panel)
+        self.chk_battery_role_admin.setGeometry(642, 70, 82, 26)
+        self.chk_battery_role_staff = QCheckBox("Staff", battery_panel)
+        self.chk_battery_role_staff.setGeometry(724, 70, 75, 26)
+        self.chk_battery_role_verifier = QCheckBox("Verifier", battery_panel)
+        self.chk_battery_role_verifier.setGeometry(800, 70, 86, 26)
+        for checkbox in [
+            self.chk_battery_role_it,
+            self.chk_battery_role_admin,
+            self.chk_battery_role_staff,
+            self.chk_battery_role_verifier,
+        ]:
+            checkbox.setStyleSheet(self.checkbox_style())
+
+        self.btn_save_battery_alerts = QPushButton("Save Policy", battery_panel)
+        self.btn_save_battery_alerts.setGeometry(808, 18, 124, 38)
+        self.btn_save_battery_alerts.setStyleSheet(self.primary_btn_style())
+        self.btn_save_battery_alerts.clicked.connect(self.save_battery_alert_settings_from_ui)
+
+        self.battery_alert_status = QLabel("Battery popups use the latest ESP32 status sent through the Raspberry Pi.", battery_panel)
+        self.battery_alert_status.setGeometry(22, 108, 900, 20)
+        self.battery_alert_status.setStyleSheet("font-size: 12px; color: #64748b; font-weight: 700;")
+
         wifi_panel = QFrame(page)
-        wifi_panel.setGeometry(0, 565, 955, 260)
+        wifi_panel.setGeometry(0, 635, 955, 250)
         self.apply_frame_style(wifi_panel, self.card_style())
 
         wifi_title = QLabel("ESP32 WiFi Provisioning", wifi_panel)
@@ -3342,7 +3512,7 @@ class DashboardWindow(QWidget):
             values = [
                 d.get("device_id") or "",
                 "Online" if d.get("is_online") else "Offline",
-                f"{d.get('battery_level')}%" if d.get("battery_level") is not None else "N/A",
+                self.battery_display_text(d, compact=True),
                 ("Assigned" if d.get("resident_name") else "Unassigned") if self.is_it_admin() else (d.get("resident_name") or "Unassigned"),
                 str(d.get("last_seen_s") or ""),
             ]
@@ -3741,6 +3911,149 @@ class DashboardWindow(QWidget):
             timeout=timeout,
         )
 
+    def load_local_battery_alert_settings(self) -> Dict[str, Any]:
+        try:
+            settings = self.settings.load().get("battery_alert_settings") or {}
+        except Exception:
+            settings = {}
+        return self.normalize_battery_alert_settings(settings)
+
+    def save_local_battery_alert_settings(self, settings: Dict[str, Any]):
+        data = self.settings.load()
+        data["battery_alert_settings"] = self.normalize_battery_alert_settings(settings)
+        self.settings.save(data)
+
+    def load_battery_alert_settings(self, quiet: bool = True, timeout: float = 1.0):
+        settings = self.load_local_battery_alert_settings()
+        if self.server_mode:
+            result = self.control_client(timeout=timeout).get_battery_alert_settings()
+            if result.get("ok"):
+                payload = result.get("data") or {}
+                settings = self.normalize_battery_alert_settings(payload.get("settings") or payload)
+                self.save_local_battery_alert_settings(settings)
+            elif not quiet and hasattr(self, "battery_alert_status"):
+                self.battery_alert_status.setText(f"Using local policy. {result.get('error') or 'Pi setting not available.'}")
+                self.battery_alert_status.setStyleSheet("font-size: 12px; color: #b45309; font-weight: 800;")
+        self.battery_alert_settings = settings
+        self.apply_battery_alert_settings_to_ui()
+        return settings
+
+    def apply_battery_alert_settings_to_ui(self):
+        if not hasattr(self, "chk_battery_alert_enabled"):
+            return
+        settings = self.normalize_battery_alert_settings(self.battery_alert_settings)
+        self.chk_battery_alert_enabled.setChecked(bool(settings.get("enabled")))
+        self.spin_battery_low.setValue(int(settings.get("low_threshold", 20)))
+        self.spin_battery_critical.setValue(int(settings.get("critical_threshold", 10)))
+        self.spin_battery_cooldown.setValue(int(settings.get("popup_cooldown_minutes", 30)))
+        roles = set(settings.get("recipient_roles") or [])
+        self.chk_battery_role_it.setChecked("IT_ADMIN" in roles)
+        self.chk_battery_role_admin.setChecked("NURSE_ADMIN" in roles)
+        self.chk_battery_role_staff.setChecked("NURSE" in roles)
+        self.chk_battery_role_verifier.setChecked("VERIFIER" in roles)
+
+    def battery_alert_settings_from_ui(self) -> Dict[str, Any]:
+        roles = []
+        for checkbox, role in [
+            (self.chk_battery_role_it, "IT_ADMIN"),
+            (self.chk_battery_role_admin, "NURSE_ADMIN"),
+            (self.chk_battery_role_staff, "NURSE"),
+            (self.chk_battery_role_verifier, "VERIFIER"),
+        ]:
+            if checkbox.isChecked():
+                roles.append(role)
+        return self.normalize_battery_alert_settings({
+            "enabled": self.chk_battery_alert_enabled.isChecked(),
+            "low_threshold": self.spin_battery_low.value(),
+            "critical_threshold": self.spin_battery_critical.value(),
+            "popup_cooldown_minutes": self.spin_battery_cooldown.value(),
+            "recipient_roles": roles or ["IT_ADMIN"],
+        })
+
+    def save_battery_alert_settings_from_ui(self):
+        if not self.is_it_admin():
+            self.show_error("Permission Required", "Only IT admins can change battery alert policy.")
+            return
+        settings = self.battery_alert_settings_from_ui()
+        busy = self.begin_button_busy(getattr(self, "btn_save_battery_alerts", None), "Saving...")
+        try:
+            result = self.control_client(timeout=5.0).save_battery_alert_settings(settings) if self.server_mode else {"ok": False}
+            if result.get("ok"):
+                payload = result.get("data") or {}
+                settings = self.normalize_battery_alert_settings(payload.get("settings") or settings)
+                message = "Battery alert policy saved to the Raspberry Pi."
+                state_color = "#047857"
+            else:
+                message = result.get("error") or "Battery alert policy saved locally. Connect to the Raspberry Pi to share it."
+                state_color = "#b45309"
+            self.battery_alert_settings = settings
+            self.save_local_battery_alert_settings(settings)
+            self.apply_battery_alert_settings_to_ui()
+            if hasattr(self, "battery_alert_status"):
+                self.battery_alert_status.setText(message)
+                self.battery_alert_status.setStyleSheet(f"font-size: 12px; color: {state_color}; font-weight: 800;")
+            try:
+                self.db.log_it_audit(
+                    self.current_user.get("username"),
+                    "Battery Alert Policy",
+                    "devices",
+                    "Success" if result.get("ok") else "Local",
+                    message,
+                )
+            except Exception:
+                pass
+        finally:
+            self.end_button_busy(busy)
+
+    def battery_alert_level(self, device: Dict[str, Any], settings: Dict[str, Any]) -> Optional[str]:
+        try:
+            percent = int(device.get("battery_level"))
+        except Exception:
+            percent = None
+        if percent is None and not self.truthy(device.get("battery_low")):
+            return None
+        if percent is not None and percent <= int(settings.get("critical_threshold", 10)):
+            return "critical"
+        if self.truthy(device.get("battery_low")) or (percent is not None and percent <= int(settings.get("low_threshold", 20))):
+            return "low"
+        return None
+
+    def check_battery_alerts(self, devices: List[Dict[str, Any]]):
+        settings = self.normalize_battery_alert_settings(self.battery_alert_settings)
+        if not settings.get("enabled", True) or not self.role_allows_battery_popup():
+            return
+        cooldown_s = int(settings.get("popup_cooldown_minutes", 30)) * 60
+        now_ts = time.time()
+        due = []
+        for device in devices:
+            if not device.get("is_online"):
+                continue
+            level = self.battery_alert_level(device, settings)
+            if not level:
+                continue
+            device_id = str(device.get("device_id") or device.get("id") or "unknown")
+            key = f"{device_id}:{level}"
+            last = self.battery_alert_last_popup.get(key, 0)
+            if now_ts - last < cooldown_s:
+                continue
+            self.battery_alert_last_popup[key] = now_ts
+            resident = device.get("resident_name") or device.get("paired_resident_name") or "Unassigned"
+            due.append((level, device_id, resident, self.battery_display_text(device), self.power_state_text(device)))
+        if not due:
+            return
+        critical = [row for row in due if row[0] == "critical"]
+        title = "Critical Battery Alert" if critical else "Low Battery Alert"
+        lines = []
+        for level, device_id, resident, battery, power in due[:8]:
+            lines.append(f"{device_id} | {resident} | {battery} | {power}")
+        if len(due) > 8:
+            lines.append(f"...and {len(due) - 8} more device(s).")
+        QMessageBox.warning(
+            self,
+            title,
+            "One or more connected smart labels need battery attention.\n\n" + "\n".join(lines),
+        )
+
     def control_client_from_form(self, timeout=2.0):
         if not hasattr(self, "control_host"):
             return self.control_client(timeout=timeout)
@@ -4095,13 +4408,15 @@ class DashboardWindow(QWidget):
             return
         devices = self.safe_get_devices()
         offline = sum(1 for d in devices if not d.get("is_online"))
+        settings = self.normalize_battery_alert_settings(self.battery_alert_settings)
+        low_threshold = int(settings.get("low_threshold", 20))
         low_battery = 0
         for d in devices:
             try:
                 battery = int(d.get("battery_level"))
             except Exception:
                 battery = None
-            if battery is not None and battery < 20:
+            if (battery is not None and battery <= low_threshold) or self.truthy(d.get("battery_low")):
                 low_battery += 1
         if hasattr(self, "control_device_summary"):
             self.control_device_summary["total"].setText(str(len(devices)))
@@ -4119,7 +4434,8 @@ class DashboardWindow(QWidget):
                 d.get("ip") or "",
                 str(d.get("port") or ""),
                 d.get("fw") or "",
-                f"{d.get('battery_level')}%" if d.get("battery_level") is not None else "N/A",
+                self.battery_display_text(d),
+                self.power_state_text(d),
                 str(d.get("last_seen_s") or ""),
             ]
             for c, value in enumerate(values):
@@ -5141,6 +5457,7 @@ class DashboardWindow(QWidget):
             devices = self.gateway.get_devices(self.base_url())
             self.db.upsert_devices(devices)
             self.set_gateway_state(True)
+            self.check_battery_alerts(self.safe_get_devices())
         except Exception as e:
             self.set_gateway_state(False)
             try:
@@ -5242,7 +5559,7 @@ class DashboardWindow(QWidget):
                 d.get("resident_name") or "Unpaired",
                 d.get("resident_uid") or "-",
                 "Online" if d.get("is_online") else "Offline",
-                f"{d.get('battery_level')}%" if d.get("battery_level") is not None else "N/A"
+                self.battery_display_text(d, compact=True)
             ]
             for c, val in enumerate(vals):
                 self.pair_table.setItem(r, c, QTableWidgetItem(val))

@@ -9,7 +9,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 import os, json, platform, subprocess, shutil, psutil, requests, secrets, string, time
 
-app = FastAPI(title="Whisperwood Control Service", version="0.4.0")
+app = FastAPI(title="Whisperwood Control Service", version="0.5.0")
 STARTED_AT = datetime.utcnow()
 
 app.add_middleware(
@@ -30,6 +30,15 @@ DOC_DIR = "/opt/whisperwood/data/documents"
 IMG_DIR = "/opt/whisperwood/data/images"
 os.makedirs(DOC_DIR, exist_ok=True)
 os.makedirs(IMG_DIR, exist_ok=True)
+
+BATTERY_ROLE_DEFAULTS = ["IT_ADMIN"]
+DEFAULT_BATTERY_ALERT_SETTINGS = {
+    "enabled": True,
+    "low_threshold": 20,
+    "critical_threshold": 10,
+    "popup_cooldown_minutes": 30,
+    "recipient_roles": BATTERY_ROLE_DEFAULTS,
+}
 
 def now():
     return datetime.utcnow().isoformat()
@@ -144,6 +153,76 @@ def bool_value(*values):
     return False
 
 
+def normalize_role_key(role: str) -> str:
+    raw = str(role or "").strip()
+    upper = raw.upper()
+    lower = raw.lower()
+    if upper == "ADMIN" or lower in {"admin", "nurse_admin", "nurseadmin"}:
+        return "NURSE_ADMIN"
+    if upper == "STAFF" or lower in {"staff", "nurse", "user"}:
+        return "NURSE"
+    if upper in {"IT_ADMIN", "ITADMIN"} or lower in {"it_admin", "itadmin", "it"}:
+        return "IT_ADMIN"
+    if upper in {"VERIFIER", "DISPLAY_VERIFIER"}:
+        return "VERIFIER"
+    return upper or "IT_ADMIN"
+
+
+def normalize_battery_alert_settings(raw: Any = None) -> dict[str, Any]:
+    data = dict(DEFAULT_BATTERY_ALERT_SETTINGS)
+    if isinstance(raw, str) and raw.strip():
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            raw = {}
+    if isinstance(raw, dict):
+        data.update(raw)
+    try:
+        data["low_threshold"] = max(1, min(100, int(data.get("low_threshold", 20))))
+    except Exception:
+        data["low_threshold"] = 20
+    try:
+        data["critical_threshold"] = max(1, min(data["low_threshold"], int(data.get("critical_threshold", 10))))
+    except Exception:
+        data["critical_threshold"] = 10
+    try:
+        data["popup_cooldown_minutes"] = max(1, min(1440, int(data.get("popup_cooldown_minutes", 30))))
+    except Exception:
+        data["popup_cooldown_minutes"] = 30
+    roles = data.get("recipient_roles") or BATTERY_ROLE_DEFAULTS
+    if isinstance(roles, str):
+        roles = [role.strip() for role in roles.split(",")]
+    allowed = {"IT_ADMIN", "NURSE_ADMIN", "NURSE", "VERIFIER"}
+    normalized = []
+    for role in roles or []:
+        key = normalize_role_key(role)
+        if key in allowed and key not in normalized:
+            normalized.append(key)
+    data["recipient_roles"] = normalized or list(BATTERY_ROLE_DEFAULTS)
+    data["enabled"] = bool(data.get("enabled", True))
+    return data
+
+
+def get_system_setting(key: str, default: Any = None) -> Any:
+    row = db_one("SELECT value_json FROM system_settings WHERE key=:key", {"key": key})
+    if not row:
+        return default
+    try:
+        return json.loads(row.get("value_json") or "")
+    except Exception:
+        return default
+
+
+def save_system_setting(key: str, value: Any) -> None:
+    payload = json.dumps(value or {}, default=str)
+    db_exec("""
+        INSERT INTO system_settings(key, value_json, updated_at)
+        VALUES(:key, :value_json, :updated_at)
+        ON CONFLICT (key)
+        DO UPDATE SET value_json=EXCLUDED.value_json, updated_at=EXCLUDED.updated_at
+    """, {"key": key, "value_json": payload, "updated_at": now()})
+
+
 def resident_display_payload(row, device_id=""):
     if not row:
         return {}
@@ -186,6 +265,18 @@ def sync_operation_devices():
             "firmware_version": device.get("fw") or device.get("firmware") or "",
             "battery_level": str(device.get("battery_level") if device.get("battery_level") is not None else ""),
             "battery_percent": device.get("battery_level") if isinstance(device.get("battery_level"), int) else None,
+            "battery_ok": device.get("battery_ok"),
+            "battery_mv": device.get("battery_mv"),
+            "battery_voltage": device.get("battery_voltage"),
+            "battery_raw_percent": device.get("battery_raw_percent"),
+            "battery_low": device.get("battery_low"),
+            "battery_alert": device.get("battery_alert"),
+            "battery_plugged": device.get("battery_plugged"),
+            "battery_charging": device.get("battery_charging"),
+            "battery_full": device.get("battery_full"),
+            "rssi": device.get("rssi"),
+            "heap": device.get("heap"),
+            "last_status_at": device.get("last_status_at") or "",
             "status": "online" if device.get("is_online") or device.get("online") else "offline",
             "last_seen": device.get("last_seen_at") or now(),
             "t": now(),
@@ -194,12 +285,24 @@ def sync_operation_devices():
             db_exec("""
                 UPDATE devices SET ip_address=:ip_address, port=:port, firmware_version=:firmware_version,
                 battery_level=:battery_level, battery_percent=:battery_percent, status=:status,
+                battery_ok=:battery_ok, battery_mv=:battery_mv, battery_voltage=:battery_voltage,
+                battery_raw_percent=:battery_raw_percent, battery_low=:battery_low, battery_alert=:battery_alert,
+                battery_plugged=:battery_plugged, battery_charging=:battery_charging, battery_full=:battery_full,
+                rssi=:rssi, heap=:heap, last_status_at=:last_status_at,
                 last_seen=:last_seen, updated_at=:t WHERE device_id=:device_id
             """, data)
         else:
             db_exec("""
-                INSERT INTO devices(device_id,ip_address,port,firmware_version,battery_level,battery_percent,status,last_seen,created_at,updated_at)
-                VALUES(:device_id,:ip_address,:port,:firmware_version,:battery_level,:battery_percent,:status,:last_seen,:t,:t)
+                INSERT INTO devices(
+                    device_id,ip_address,port,firmware_version,battery_level,battery_percent,status,last_seen,
+                    battery_ok,battery_mv,battery_voltage,battery_raw_percent,battery_low,battery_alert,
+                    battery_plugged,battery_charging,battery_full,rssi,heap,last_status_at,created_at,updated_at
+                )
+                VALUES(
+                    :device_id,:ip_address,:port,:firmware_version,:battery_level,:battery_percent,:status,:last_seen,
+                    :battery_ok,:battery_mv,:battery_voltage,:battery_raw_percent,:battery_low,:battery_alert,
+                    :battery_plugged,:battery_charging,:battery_full,:rssi,:heap,:last_status_at,:t,:t
+                )
             """, data)
     return devices
 
@@ -239,9 +342,19 @@ def merged_devices():
             "last_seen_s": live.get("last_seen_s") if live else 9999,
             "battery_level": live.get("battery_level") if live.get("battery_level") is not None else row.get("battery_percent"),
             "battery": live.get("battery_level") if live.get("battery_level") is not None else row.get("battery_percent"),
-            "rssi": live.get("rssi"),
-            "heap": live.get("heap"),
+            "battery_ok": first_value(live.get("battery_ok"), row.get("battery_ok")),
+            "battery_mv": first_value(live.get("battery_mv"), row.get("battery_mv")),
+            "battery_voltage": first_value(live.get("battery_voltage"), row.get("battery_voltage")),
+            "battery_raw_percent": first_value(live.get("battery_raw_percent"), row.get("battery_raw_percent")),
+            "battery_low": first_value(live.get("battery_low"), row.get("battery_low")),
+            "battery_alert": first_value(live.get("battery_alert"), row.get("battery_alert")),
+            "battery_plugged": first_value(live.get("battery_plugged"), row.get("battery_plugged")),
+            "battery_charging": first_value(live.get("battery_charging"), row.get("battery_charging")),
+            "battery_full": first_value(live.get("battery_full"), row.get("battery_full")),
+            "rssi": first_value(live.get("rssi"), row.get("rssi")),
+            "heap": first_value(live.get("heap"), row.get("heap")),
             "wifi": live.get("wifi"),
+            "last_status_at": first_value(live.get("last_status_at"), row.get("last_status_at")),
             "lcd_image_cached": live.get("lcd_image_cached"),
             "pi_cached_image": live.get("pi_cached_image"),
             "connection_state": live.get("connection_state") or ("online" if is_online else "offline"),
@@ -269,9 +382,19 @@ def merged_devices():
             "last_seen_s": live.get("last_seen_s") or 0,
             "battery_level": live.get("battery_level"),
             "battery": live.get("battery_level"),
+            "battery_ok": live.get("battery_ok"),
+            "battery_mv": live.get("battery_mv"),
+            "battery_voltage": live.get("battery_voltage"),
+            "battery_raw_percent": live.get("battery_raw_percent"),
+            "battery_low": live.get("battery_low"),
+            "battery_alert": live.get("battery_alert"),
+            "battery_plugged": live.get("battery_plugged"),
+            "battery_charging": live.get("battery_charging"),
+            "battery_full": live.get("battery_full"),
             "rssi": live.get("rssi"),
             "heap": live.get("heap"),
             "wifi": live.get("wifi"),
+            "last_status_at": live.get("last_status_at"),
             "lcd_image_cached": live.get("lcd_image_cached"),
             "pi_cached_image": live.get("pi_cached_image"),
             "connection_state": live.get("connection_state") or ("online" if is_online else "offline"),
@@ -411,6 +534,30 @@ def init_db():
         last_seen TEXT,
         paired_resident_id INTEGER,
         created_at TEXT,
+        updated_at TEXT
+    );
+    """)
+
+    for sql in [
+        "ALTER TABLE devices ADD COLUMN IF NOT EXISTS battery_ok BOOLEAN",
+        "ALTER TABLE devices ADD COLUMN IF NOT EXISTS battery_mv INTEGER",
+        "ALTER TABLE devices ADD COLUMN IF NOT EXISTS battery_voltage REAL",
+        "ALTER TABLE devices ADD COLUMN IF NOT EXISTS battery_raw_percent REAL",
+        "ALTER TABLE devices ADD COLUMN IF NOT EXISTS battery_low BOOLEAN",
+        "ALTER TABLE devices ADD COLUMN IF NOT EXISTS battery_alert BOOLEAN",
+        "ALTER TABLE devices ADD COLUMN IF NOT EXISTS battery_plugged BOOLEAN",
+        "ALTER TABLE devices ADD COLUMN IF NOT EXISTS battery_charging BOOLEAN",
+        "ALTER TABLE devices ADD COLUMN IF NOT EXISTS battery_full BOOLEAN",
+        "ALTER TABLE devices ADD COLUMN IF NOT EXISTS rssi INTEGER",
+        "ALTER TABLE devices ADD COLUMN IF NOT EXISTS heap INTEGER",
+        "ALTER TABLE devices ADD COLUMN IF NOT EXISTS last_status_at TEXT",
+    ]:
+        db_exec(sql)
+
+    db_exec("""
+    CREATE TABLE IF NOT EXISTS system_settings (
+        key TEXT PRIMARY KEY,
+        value_json TEXT NOT NULL,
         updated_at TEXT
     );
     """)
@@ -559,6 +706,18 @@ class DevicePayload(BaseModel):
     firmware_version: Optional[str] = ""
     battery_level: Optional[str] = "Medium"
     battery_percent: Optional[int] = None
+    battery_ok: Optional[bool] = None
+    battery_mv: Optional[int] = None
+    battery_voltage: Optional[float] = None
+    battery_raw_percent: Optional[float] = None
+    battery_low: Optional[bool] = None
+    battery_alert: Optional[bool] = None
+    battery_plugged: Optional[bool] = None
+    battery_charging: Optional[bool] = None
+    battery_full: Optional[bool] = None
+    rssi: Optional[int] = None
+    heap: Optional[int] = None
+    last_status_at: Optional[str] = ""
     status: Optional[str] = "offline"
 
 class PairPayload(BaseModel):
@@ -622,6 +781,14 @@ class DropdownOptionsPayload(BaseModel):
     response_json: Optional[dict] = {}
 
 
+class BatteryAlertSettingsPayload(BaseModel):
+    enabled: bool = True
+    low_threshold: int = 20
+    critical_threshold: int = 10
+    popup_cooldown_minutes: int = 30
+    recipient_roles: list[str] = ["IT_ADMIN"]
+
+
 def resident_sql_values(payload: ResidentPayload, resident_id: int | None = None):
     data = payload.dict()
     texture = first_value(data.get("texture"), data.get("allergies"))
@@ -643,7 +810,7 @@ def health():
     return {
         "ok": True,
         "service": "control",
-        "version": "0.4.0",
+        "version": "0.5.0",
         "hostname": platform.node(),
         "time": now(),
         "uptime": f"{uptime_s}s",
@@ -833,13 +1000,26 @@ def upsert_device(payload: DevicePayload, x_whisperwood_key: str | None = Header
     if existing:
         db_exec("""
             UPDATE devices SET ip_address=:ip_address, port=:port, firmware_version=:firmware_version,
-            battery_level=:battery_level, battery_percent=:battery_percent, status=:status, updated_at=:t
+            battery_level=:battery_level, battery_percent=:battery_percent,
+            battery_ok=:battery_ok, battery_mv=:battery_mv, battery_voltage=:battery_voltage,
+            battery_raw_percent=:battery_raw_percent, battery_low=:battery_low, battery_alert=:battery_alert,
+            battery_plugged=:battery_plugged, battery_charging=:battery_charging, battery_full=:battery_full,
+            rssi=:rssi, heap=:heap, last_status_at=:last_status_at,
+            status=:status, updated_at=:t
             WHERE device_id=:device_id
         """, data)
     else:
         db_exec("""
-            INSERT INTO devices(device_id,ip_address,port,firmware_version,battery_level,battery_percent,status,created_at,updated_at)
-            VALUES(:device_id,:ip_address,:port,:firmware_version,:battery_level,:battery_percent,:status,:t,:t)
+            INSERT INTO devices(
+                device_id,ip_address,port,firmware_version,battery_level,battery_percent,
+                battery_ok,battery_mv,battery_voltage,battery_raw_percent,battery_low,battery_alert,
+                battery_plugged,battery_charging,battery_full,rssi,heap,last_status_at,status,created_at,updated_at
+            )
+            VALUES(
+                :device_id,:ip_address,:port,:firmware_version,:battery_level,:battery_percent,
+                :battery_ok,:battery_mv,:battery_voltage,:battery_raw_percent,:battery_low,:battery_alert,
+                :battery_plugged,:battery_charging,:battery_full,:rssi,:heap,:last_status_at,:status,:t,:t
+            )
         """, data)
     return {"ok": True}
 
@@ -1203,6 +1383,31 @@ def dropdown_options_alias(x_whisperwood_key: str | None = Header(default=None))
 def save_dropdown_options_alias(payload: DropdownOptionsPayload, x_whisperwood_key: str | None = Header(default=None)):
     return save_resident_dropdown_options(payload, x_whisperwood_key)
 
+
+@app.get("/battery-alert-settings")
+def battery_alert_settings(x_whisperwood_key: str | None = Header(default=None)):
+    require_key(x_whisperwood_key)
+    settings = normalize_battery_alert_settings(get_system_setting("battery_alert_settings", DEFAULT_BATTERY_ALERT_SETTINGS))
+    return {"ok": True, "settings": settings}
+
+
+@app.post("/battery-alert-settings")
+@app.put("/battery-alert-settings")
+def save_battery_alert_settings(payload: BatteryAlertSettingsPayload, x_whisperwood_key: str | None = Header(default=None)):
+    require_key(x_whisperwood_key)
+    settings = normalize_battery_alert_settings(payload.dict())
+    save_system_setting("battery_alert_settings", settings)
+    log_action(
+        "system",
+        "battery_alert_settings",
+        "devices",
+        "success",
+        "Battery alert policy updated",
+        payload=settings,
+        response={"ok": True},
+    )
+    return {"ok": True, "settings": settings}
+
 @app.get("/system")
 def system_status(x_whisperwood_key: str | None = Header(default=None)):
     require_key(x_whisperwood_key)
@@ -1342,7 +1547,7 @@ def bootstrap_info(x_whisperwood_key: str | None = Header(default=None)):
     require_key(x_whisperwood_key)
     return {
         "ok": True,
-        "version": "0.4.0",
+        "version": "0.5.0",
         "database_user": "whisperwood_app",
         "default_users": [
             {"username": "admin", "password": "admin123", "role": "admin"},

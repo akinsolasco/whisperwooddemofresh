@@ -49,6 +49,18 @@ class ServerGatewayClient:
                 last_seen_s=int(row.get("last_seen_s") or row.get("last_seen") or 9999),
                 battery_level=row.get("battery_level") or row.get("battery"),
                 online=row.get("is_online", row.get("online")),
+                battery_ok=row.get("battery_ok"),
+                battery_mv=row.get("battery_mv"),
+                battery_voltage=row.get("battery_voltage"),
+                battery_raw_percent=row.get("battery_raw_percent"),
+                battery_low=row.get("battery_low"),
+                battery_alert=row.get("battery_alert"),
+                battery_plugged=row.get("battery_plugged"),
+                battery_charging=row.get("battery_charging"),
+                battery_full=row.get("battery_full"),
+                rssi=row.get("rssi"),
+                heap=row.get("heap"),
+                last_status_at=row.get("last_status_at"),
             ))
         return devices
 

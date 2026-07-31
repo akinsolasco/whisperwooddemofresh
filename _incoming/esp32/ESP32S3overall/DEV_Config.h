@@ -48,18 +48,18 @@
 **/
 #define EPD_SCK_PIN  12
 #define EPD_MOSI_PIN 11
-#define EPD_CS_PIN   10
-#define EPD_DC_PIN   13
-#define EPD_RST_PIN  14
-#define EPD_BUSY_PIN  4
-//#define EPD_PWR_PIN 5
+#define EPD_CS_PIN   15
+#define EPD_DC_PIN   14
+#define EPD_RST_PIN  16
+#define EPD_BUSY_PIN 17
+//#define EPD_PWR_PIN 18
 
 /**
  * Enable it or not according to the actual hardware used, and the corresponding pin
  */
 #define D_9PIN  1
 #if D_9PIN
-    #define EPD_PWR_PIN 5
+    #define EPD_PWR_PIN 18
 #endif
 
 

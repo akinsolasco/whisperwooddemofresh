@@ -19,6 +19,7 @@ The checked Pi configuration uses:
 - Download site: `/opt/whisperwood-download-site`, public port `8090`
 - Data folders: `/opt/whisperwood/data/documents` and `/opt/whisperwood/data/images`
 - Firewall: UFW allows `22/tcp`, `5000/tcp`, `7000/tcp`, and `8090/tcp`
+- Battery telemetry: ESP32 reports MAX17048 battery/charger status through Operation Manager `/devices`; Control Service persists it and desktop IT Admin controls popup alert policy through `/battery-alert-settings`.
 
 Secrets are not stored in this repo. They must be supplied when installing.
 

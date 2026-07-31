@@ -31,7 +31,7 @@ IMAGE_RESYNC_COOLDOWN_S = int(os.getenv("WHISPERWOOD_IMAGE_RESYNC_COOLDOWN_S", "
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(IMAGE_CACHE_DIR, exist_ok=True)
 
-app = FastAPI(title="Whisperwood Operation Manager", version="0.2.0")
+app = FastAPI(title="Whisperwood Operation Manager", version="0.3.0")
 
 
 def utc_now() -> str:
@@ -127,6 +127,30 @@ def parse_bool(value: Any) -> Optional[bool]:
     return None
 
 
+def parse_int(value: Any, minimum: Optional[int] = None) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    try:
+        number = int(float(str(value).strip()))
+    except Exception:
+        return None
+    if minimum is not None and number < minimum:
+        return None
+    return number
+
+
+def parse_float(value: Any, minimum: Optional[float] = None) -> Optional[float]:
+    if value is None or value == "":
+        return None
+    try:
+        number = float(str(value).strip())
+    except Exception:
+        return None
+    if minimum is not None and number < minimum:
+        return None
+    return number
+
+
 def safe_device_filename(device_id: str) -> str:
     return "".join(ch if ch.isalnum() or ch in {"-", "_"} else "_" for ch in str(device_id))
 
@@ -176,6 +200,15 @@ class ConnState:
     pending_img_seq: Optional[int] = None
     pending_lcd_seq: Optional[int] = None
     battery_level: Optional[int] = None
+    battery_ok: Optional[bool] = None
+    battery_mv: Optional[int] = None
+    battery_voltage: Optional[float] = None
+    battery_raw_percent: Optional[float] = None
+    battery_low: Optional[bool] = None
+    battery_alert: Optional[bool] = None
+    battery_plugged: Optional[bool] = None
+    battery_charging: Optional[bool] = None
+    battery_full: Optional[bool] = None
     heap: Optional[int] = None
     rssi: Optional[int] = None
     uptime_ms: Optional[int] = None
@@ -363,26 +396,20 @@ def handle_line(st: ConnState, line: str) -> None:
 
     if line.startswith("STATUS"):
         kv = parse_kv_line(line)
-        battery = kv.get("battery")
-        heap = kv.get("heap")
-        rssi = kv.get("rssi")
-        uptime_ms = kv.get("uptime_ms")
-        try:
-            st.battery_level = int(battery) if battery is not None and int(battery) >= 0 else None
-        except Exception:
-            st.battery_level = None
-        try:
-            st.heap = int(heap) if heap is not None else None
-        except Exception:
-            st.heap = None
-        try:
-            st.rssi = int(rssi) if rssi is not None else None
-        except Exception:
-            st.rssi = None
-        try:
-            st.uptime_ms = int(uptime_ms) if uptime_ms is not None else None
-        except Exception:
-            st.uptime_ms = None
+        st.battery_level = parse_int(kv.get("battery"), minimum=0)
+        st.battery_ok = parse_bool(kv.get("battery_ok"))
+        st.battery_mv = parse_int(kv.get("battery_mv"), minimum=0)
+        st.battery_voltage = round(st.battery_mv / 1000.0, 3) if st.battery_mv is not None else parse_float(kv.get("battery_voltage"), minimum=0)
+        raw_x10 = parse_int(kv.get("battery_raw_x10"), minimum=0)
+        st.battery_raw_percent = round(raw_x10 / 10.0, 1) if raw_x10 is not None else parse_float(kv.get("battery_raw"), minimum=0)
+        st.battery_low = parse_bool(kv.get("battery_low"))
+        st.battery_alert = parse_bool(kv.get("battery_alert"))
+        st.battery_plugged = parse_bool(kv.get("battery_plugged"))
+        st.battery_charging = parse_bool(kv.get("battery_charging"))
+        st.battery_full = parse_bool(kv.get("battery_full"))
+        st.heap = parse_int(kv.get("heap"), minimum=0)
+        st.rssi = parse_int(kv.get("rssi"))
+        st.uptime_ms = parse_int(kv.get("uptime_ms"), minimum=0)
         lcd_image = parse_bool(kv.get("lcd_image"))
         if lcd_image is not None:
             st.lcd_image_cached = lcd_image
@@ -581,6 +608,15 @@ def device_to_json(st: ConnState) -> Dict[str, Any]:
         "offline_reason": "" if online else (st.offline_reason or "stale"),
         "battery_level": st.battery_level,
         "battery": st.battery_level,
+        "battery_ok": st.battery_ok,
+        "battery_mv": st.battery_mv,
+        "battery_voltage": st.battery_voltage,
+        "battery_raw_percent": st.battery_raw_percent,
+        "battery_low": st.battery_low,
+        "battery_alert": st.battery_alert,
+        "battery_plugged": st.battery_plugged,
+        "battery_charging": st.battery_charging,
+        "battery_full": st.battery_full,
         "heap": st.heap,
         "rssi": st.rssi,
         "uptime_ms": st.uptime_ms,
@@ -784,7 +820,7 @@ def health() -> Dict[str, Any]:
     return {
         "ok": True,
         "service": "operation",
-        "version": "0.2.0",
+        "version": "0.3.0",
         "time": utc_now(),
         "tcp_host": HOST,
         "tcp_port": TCP_PORT,
