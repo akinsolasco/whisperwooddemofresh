@@ -19,7 +19,7 @@ static const char* DEFAULT_WIFI_SSID = "EPD-GATEWAY";
 static const char* DEFAULT_WIFI_PASS = "epaper123";
 static const char* DEFAULT_PI_HOST = "192.168.4.1";
 static const uint16_t DEFAULT_PI_PORT = 5000;
-static const uint8_t FIRMWARE_VERSION = 11;
+static const uint8_t FIRMWARE_VERSION = 12;
 static const uint32_t WIFI_RETRY_MS = 15000;
 static const uint32_t WIFI_CONNECT_GRACE_MS = 20000;
 static const uint32_t PI_RETRY_MS = 3000;
@@ -105,6 +105,8 @@ LGFX tft;
 
 uint16_t* lcdImageBuf = nullptr;
 static bool lcdPowerOn = true;
+static bool gEpaperActive = false;
+static unsigned long gEpaperGuardUntilMs = 0;
 
 // ================= E-PAPER DISPLAY ============================
 UBYTE* ImageBuffer = nullptr;
@@ -121,6 +123,9 @@ UBYTE* ImageBuffer = nullptr;
 #define VALUE_CONTINUATION_MAX_INDENT 180
 #define DISPLAY_BOTTOM_MARGIN 8
 static const bool EPD_FULL_WHITE_CLEAN_BEFORE_UPDATE = true;
+static const uint32_t EPD_CLEAR_SETTLE_MS = 4000;
+static const uint32_t EPD_DISPLAY_SETTLE_MS = 15000;
+static const uint32_t EPD_LCD_GUARD_MS = 3000;
 
 // ================= DEVICE ID =========================
 char DEVICE_ID[32] = { 0 };
@@ -764,8 +769,35 @@ static int renderSectionIfText(const char* label, const char* value,
   return renderSection(label, value, sectionCode, startX, y, maxX, font);
 }
 
+static bool epaperPinsBusy() {
+  if (gEpaperActive) return true;
+  if (gEpaperGuardUntilMs == 0) return false;
+  return (long)(gEpaperGuardUntilMs - millis()) > 0;
+}
+
+static void beginEpaperBusyGuard() {
+  gEpaperActive = true;
+  gEpaperGuardUntilMs = 0;
+}
+
+static void finishEpaperBusyGuard() {
+  gEpaperActive = false;
+  gEpaperGuardUntilMs = millis() + EPD_LCD_GUARD_MS;
+}
+
+class EpaperBusyScope {
+public:
+  EpaperBusyScope() {
+    beginEpaperBusyGuard();
+  }
+  ~EpaperBusyScope() {
+    finishEpaperBusyGuard();
+  }
+};
+
 // ================= E-PAPER DISPLAY =================
 static void displayFromData(const DisplayData& d) {
+  EpaperBusyScope epaperBusyScope;
   stage("epaper: start");
   printHeap("before epaper");
 
@@ -784,6 +816,8 @@ static void displayFromData(const DisplayData& d) {
   if (EPD_FULL_WHITE_CLEAN_BEFORE_UPDATE) {
     stage("epaper: white clean");
     EPD_3IN6E_Clear(EPD_3IN6E_WHITE);
+    stage("epaper: clean settle");
+    delay(EPD_CLEAR_SETTLE_MS);
     if (!EPD_3IN6E_IsReady()) {
       stage("epaper: white clean busy timeout");
       return;
@@ -837,6 +871,8 @@ static void displayFromData(const DisplayData& d) {
 
   stage("epaper: display");
   EPD_3IN6E_Display(ImageBuffer);
+  stage("epaper: display settle");
+  delay(EPD_DISPLAY_SETTLE_MS);
   if (EPD_3IN6E_IsReady()) {
     EPD_3IN6E_Sleep();
   } else {
@@ -1205,6 +1241,15 @@ static void handleImageLine(const char* line) {
     char ack[96];
     snprintf(ack, sizeof(ack), "ACKIMG seq=%ld ok=0 err=size\n", seq);
     sendRawToPi(ack);
+    return;
+  }
+
+  if (epaperPinsBusy()) {
+    discardExactBytes((size_t)size, 15000);
+    char ack[112];
+    snprintf(ack, sizeof(ack), "ACKIMG seq=%ld ok=0 err=epaper_busy\n", seq);
+    sendRawToPi(ack);
+    Serial.printf("[ACKIMG] rejected seq=%ld because e-paper pins are busy\n", seq);
     return;
   }
 
@@ -1752,11 +1797,11 @@ static void sendStatusIfDue() {
 
   BatteryTelemetry battery = readBatteryTelemetry();
   String ipText = WiFi.status() == WL_CONNECTED ? WiFi.localIP().toString() : "-";
-  char line[320];
+  char line[384];
   snprintf(
     line,
     sizeof(line),
-    "STATUS battery=%d battery_ok=%d battery_mv=%d battery_raw_x10=%d battery_low=%d battery_alert=%d battery_plugged=%d battery_charging=%d battery_full=%d heap=%u wifi=%s ip=%s rssi=%d lcd_image=%d uptime_ms=%lu\n",
+    "STATUS battery=%d battery_ok=%d battery_mv=%d battery_raw_x10=%d battery_low=%d battery_alert=%d battery_plugged=%d battery_charging=%d battery_full=%d heap=%u wifi=%s ip=%s rssi=%d lcd_image=%d epaper_busy=%d uptime_ms=%lu\n",
     battery.percent,
     battery.ok ? 1 : 0,
     battery.millivolts,
@@ -1771,6 +1816,7 @@ static void sendStatusIfDue() {
     ipText.c_str(),
     WiFi.status() == WL_CONNECTED ? WiFi.RSSI() : 0,
     (lcdImageBuf || gLcdImageStored) ? 1 : 0,
+    epaperPinsBusy() ? 1 : 0,
     (unsigned long)millis()
   );
   sendRawToPi(line);

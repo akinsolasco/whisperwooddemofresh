@@ -34,6 +34,10 @@ def friendly_error_message(
         return "This workstation is not authorized to use the Raspberry Pi Control Service. Ask IT to verify the Control API key."
     if status_code == 404:
         return "The Raspberry Pi server is reachable, but this feature is not available on the server yet. Ask IT to update the Pi backend."
+    if "e-paper is updating" in lowered or "epaper is updating" in lowered or "epaper_busy" in lowered:
+        return "The e-paper screen is still updating. Wait until the text finishes, then send the LCD photo again."
+    if "lcd photo is updating" in lowered:
+        return "The LCD photo is still uploading. Wait until it finishes, then send the e-paper text again."
     if status_code == 409 or "busy" in lowered:
         return "The device is busy finishing the previous request. Wait a few seconds, then try again."
     if status_code in {502, 504} or "timeout" in lowered or "timed out" in lowered:

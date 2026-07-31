@@ -31,7 +31,7 @@ IMAGE_RESYNC_COOLDOWN_S = int(os.getenv("WHISPERWOOD_IMAGE_RESYNC_COOLDOWN_S", "
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(IMAGE_CACHE_DIR, exist_ok=True)
 
-app = FastAPI(title="Whisperwood Operation Manager", version="0.3.2")
+app = FastAPI(title="Whisperwood Operation Manager", version="0.3.3")
 
 
 def utc_now() -> str:
@@ -213,6 +213,7 @@ class ConnState:
     rssi: Optional[int] = None
     uptime_ms: Optional[int] = None
     lcd_image_cached: Optional[bool] = None
+    epaper_busy: Optional[bool] = None
     last_image_resync_at: float = 0.0
     wifi: str = ""
     ip: str = ""
@@ -415,6 +416,7 @@ def handle_line(st: ConnState, line: str) -> None:
             st.lcd_image_cached = lcd_image
             if not lcd_image:
                 queue_cached_image_resync(st, "esp reported no lcd image")
+        st.epaper_busy = parse_bool(kv.get("epaper_busy"))
         st.last_status_at = time.time()
         st.wifi = kv.get("wifi", "")
         st.ip = kv.get("ip", st.ip or st.addr[0])
@@ -621,6 +623,7 @@ def device_to_json(st: ConnState) -> Dict[str, Any]:
         "rssi": st.rssi,
         "uptime_ms": st.uptime_ms,
         "lcd_image_cached": st.lcd_image_cached,
+        "epaper_busy": bool(st.epaper_busy or st.pending_seq is not None),
         "pi_cached_image": bool(st.device_id and has_cached_device_image(st.device_id)),
         "wifi": st.wifi,
         "reported_ip": st.ip,
@@ -672,6 +675,8 @@ def send_text_to_device(body: Dict[str, Any]) -> Dict[str, Any]:
     st = get_device_state(str(dev_id))
     if st.pending_seq is not None:
         raise HTTPException(status_code=409, detail=f"device busy: pending_seq={st.pending_seq}")
+    if st.pending_img_seq is not None:
+        raise HTTPException(status_code=409, detail=f"LCD photo is updating; wait before sending e-paper text. pending_img_seq={st.pending_img_seq}")
     seq = next_seq()
     line = build_update_line(seq, body)
     event = create_ack(st, "text", seq)
@@ -698,6 +703,10 @@ def send_rgb565_to_device(device_id: str, rgb565: bytes, cache_after_ack: bool =
     if not device_id:
         raise HTTPException(status_code=400, detail="missing id")
     st = get_device_state(device_id)
+    if st.pending_seq is not None:
+        raise HTTPException(status_code=409, detail=f"E-paper is updating; wait before sending LCD photo. pending_seq={st.pending_seq}")
+    if st.epaper_busy:
+        raise HTTPException(status_code=409, detail="E-paper is updating; wait before sending LCD photo.")
     if st.pending_img_seq is not None:
         raise HTTPException(status_code=409, detail=f"image channel busy: pending_img_seq={st.pending_img_seq}")
     if len(rgb565) != LCD_BYTES:
@@ -840,7 +849,7 @@ def health() -> Dict[str, Any]:
     return {
         "ok": True,
         "service": "operation",
-        "version": "0.3.2",
+        "version": "0.3.3",
         "time": utc_now(),
         "tcp_host": HOST,
         "tcp_port": TCP_PORT,

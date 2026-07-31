@@ -42,6 +42,7 @@ class GatewayClient:
                 rssi=d.get("rssi"),
                 heap=d.get("heap"),
                 last_status_at=d.get("last_status_at"),
+                epaper_busy=d.get("epaper_busy"),
             ))
         return devices
 
@@ -63,7 +64,7 @@ class GatewayClient:
                 f"{base_url.rstrip('/')}/send_image",
                 data=data,
                 files=files,
-                timeout=30,
+                timeout=100,
             )
         try:
             body = r.json()

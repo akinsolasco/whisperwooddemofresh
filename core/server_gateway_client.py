@@ -61,6 +61,7 @@ class ServerGatewayClient:
                 rssi=row.get("rssi"),
                 heap=row.get("heap"),
                 last_status_at=row.get("last_status_at"),
+                epaper_busy=row.get("epaper_busy"),
             ))
         return devices
 
@@ -72,7 +73,7 @@ class ServerGatewayClient:
         }
 
     def send_image(self, _base_url: str, device_id: str, image_path: str) -> Dict[str, Any]:
-        result = self.client(timeout=45.0).operation_send_image(device_id, image_path)
+        result = self.client(timeout=100.0).operation_send_image(device_id, image_path)
         return {
             "status_code": result.get("status_code") or (200 if result.get("ok") else 500),
             "body": result.get("data") if result.get("ok") else {"ok": False, "message": result.get("error")},

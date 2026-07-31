@@ -47,7 +47,10 @@
 - Operation Manager now caches the last successfully ACKed LCD RGB565 image per ESP32 device in:
   `/opt/whisperwood/data/lcd_images/<device_id>.rgb565`
 - If an ESP32 reports `lcd_image=0` in its `STATUS` line and the Pi has a cached image, the Pi queues a background resend.
-- Normal resident display flow remains text first, then photo after text ACK.
+- Resident Save and Pairing now send e-paper text only.
+- LCD resident photos are sent manually from the desktop "Send Photo Only" action.
+- Operation Manager rejects LCD photo uploads while e-paper text is still pending/busy, and rejects text while a photo upload is pending.
+- ESP32 firmware reports `epaper_busy` in `STATUS` so the Pi and desktop can avoid overlapping screen jobs.
 
 ## Online/offline detection
 

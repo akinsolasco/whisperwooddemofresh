@@ -274,6 +274,7 @@ class ServerDataService:
             "rssi": row.get("rssi"),
             "heap": row.get("heap"),
             "last_status_at": row.get("last_status_at"),
+            "epaper_busy": row.get("epaper_busy"),
             "paired_resident_id": resident_id,
             "resident_name": row.get("resident_name") or row.get("full_name") or resident.get("full_name"),
             "resident_uid": row.get("resident_uid") or resident.get("resident_uid"),

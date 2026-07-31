@@ -9,7 +9,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 import os, json, platform, subprocess, shutil, psutil, requests, secrets, string, time
 
-app = FastAPI(title="Whisperwood Control Service", version="0.5.1")
+app = FastAPI(title="Whisperwood Control Service", version="0.5.2")
 STARTED_AT = datetime.utcnow()
 
 app.add_middleware(
@@ -356,6 +356,7 @@ def merged_devices():
             "wifi": live.get("wifi"),
             "last_status_at": first_value(live.get("last_status_at"), row.get("last_status_at")),
             "lcd_image_cached": live.get("lcd_image_cached"),
+            "epaper_busy": live.get("epaper_busy"),
             "pi_cached_image": live.get("pi_cached_image"),
             "connection_state": live.get("connection_state") or ("online" if is_online else "offline"),
             "offline_reason": live.get("offline_reason") or "",
@@ -396,6 +397,7 @@ def merged_devices():
             "wifi": live.get("wifi"),
             "last_status_at": live.get("last_status_at"),
             "lcd_image_cached": live.get("lcd_image_cached"),
+            "epaper_busy": live.get("epaper_busy"),
             "pi_cached_image": live.get("pi_cached_image"),
             "connection_state": live.get("connection_state") or ("online" if is_online else "offline"),
             "offline_reason": live.get("offline_reason") or "",
@@ -810,7 +812,7 @@ def health():
     return {
         "ok": True,
         "service": "control",
-        "version": "0.5.1",
+        "version": "0.5.2",
         "hostname": platform.node(),
         "time": now(),
         "uptime": f"{uptime_s}s",
@@ -1483,7 +1485,7 @@ async def operation_send_image(id: str = Form(default=""), image: UploadFile = F
     require_key(x_whisperwood_key)
     raw = await image.read()
     files = {"image": (image.filename or "resident_photo", raw, image.content_type or "application/octet-stream")}
-    return operation_request("POST", "/send_image", files=files, data={"id": id}, timeout=55)
+    return operation_request("POST", "/send_image", files=files, data={"id": id}, timeout=100)
 
 @app.post("/operation/lcd")
 def operation_lcd(payload: Optional[dict] = Body(default=None), x_whisperwood_key: str | None = Header(default=None)):
@@ -1547,7 +1549,7 @@ def bootstrap_info(x_whisperwood_key: str | None = Header(default=None)):
     require_key(x_whisperwood_key)
     return {
         "ok": True,
-        "version": "0.5.1",
+        "version": "0.5.2",
         "database_user": "whisperwood_app",
         "default_users": [
             {"username": "admin", "password": "admin123", "role": "admin"},

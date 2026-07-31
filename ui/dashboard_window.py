@@ -2622,18 +2622,17 @@ class DashboardWindow(QWidget):
         self.btn_choose_image.setStyleSheet(self.secondary_btn_style())
         self.btn_choose_image.hide()
 
-        self.btn_send_image = QPushButton("", self.upd_left)
-        self.btn_send_image.setGeometry(22, 488, 170, 42)
+        self.btn_send_image = QPushButton("Send Photo Only", self.upd_left)
+        self.btn_send_image.setGeometry(360, 444, 152, 42)
         self.btn_send_image.setStyleSheet(self.secondary_btn_style())
-        self.btn_send_image.hide()
 
         self.btn_clear_image = QPushButton("Clear Image", self.upd_left)
         self.btn_clear_image.setGeometry(312, 488, 120, 42)
         self.btn_clear_image.setStyleSheet(self.secondary_btn_style())
         self.btn_clear_image.hide()
 
-        self.image_path_label = QLabel("Resident photo is managed in Resident Records and uploaded on Save.", self.upd_left)
-        self.image_path_label.setGeometry(22, 540, 490, 44)
+        self.image_path_label = QLabel("Resident photo is attached in Resident Records. Use Send Photo Only after the e-paper text finishes.", self.upd_left)
+        self.image_path_label.setGeometry(22, 506, 490, 44)
         self.image_path_label.setWordWrap(True)
         self.image_path_label.setStyleSheet("font-size: 12px; color: #a7a7a7;")
 
@@ -2901,6 +2900,7 @@ class DashboardWindow(QWidget):
         self.btn_preview.clicked.connect(self.update_preview)
         self.btn_send_text.clicked.connect(self.send_text_update)
         self.btn_choose_image.clicked.connect(self.choose_image)
+        self.btn_send_image.clicked.connect(self.send_image)
         self.btn_clear_image.clicked.connect(self.clear_lcd_image)
         self.upd_target.currentIndexChanged.connect(lambda _index: self.on_update_target_changed())
         self.btn_lcd_on.clicked.connect(lambda: self.send_lcd_command("on"))
@@ -3031,7 +3031,7 @@ class DashboardWindow(QWidget):
             self.resident_photo_label.setText(form_text)
         if hasattr(self, "image_path_label"):
             if self.selected_image_path:
-                self.image_path_label.setText(f"Resident photo saved with record: {schedule_text}")
+                self.image_path_label.setText(f"Resident photo saved with record: {schedule_text}. Use Send Photo Only when the e-paper is idle.")
             else:
                 self.image_path_label.setText(schedule_text)
 
@@ -5299,7 +5299,7 @@ class DashboardWindow(QWidget):
             self.refresh_dashboard_summary()
             queued = self.send_saved_resident_if_paired()
             if queued:
-                self.show_info("Saved", f"{message}\n\nDisplay update started in the background: photo first, then e-paper text.")
+                self.show_info("Saved", f"{message}\n\nText update started in the background. Send the resident photo separately from LCD Schedule.")
             else:
                 self.show_info("Saved", message)
 
@@ -5482,11 +5482,12 @@ class DashboardWindow(QWidget):
             row,
             device_id,
             payload,
-            "Saved resident sent to paired device",
+            "Saved resident text sent to paired device",
             "Auto-send",
-            image_path=self.selected_image_path or row.get("lcd_image_path"),
+            image_path=None,
             action_type="auto_send_after_save",
             notify_on_failure=True,
+            include_image=False,
         )
         return True
 
@@ -5656,7 +5657,7 @@ class DashboardWindow(QWidget):
             )
             self.push_resident_row_to_device(row, device_id, "auto_send_after_pair")
             self.refresh_devices()
-            self.show_info("Paired", f"{row['full_name']} paired to {device_id}.\n\nDisplay update started in the background: photo first, then e-paper text.")
+            self.show_info("Paired", f"{row['full_name']} paired to {device_id}.\n\nText update started in the background. Send the resident photo separately from LCD Schedule.")
         except Exception as e:
             self.show_error("Pair failed", str(e))
         finally:
@@ -5670,11 +5671,12 @@ class DashboardWindow(QWidget):
             row,
             device_id,
             payload,
-            "Latest resident text/photo pushed after pairing",
+            "Latest resident text pushed after pairing",
             "Auto-push",
-            image_path=row.get("lcd_image_path"),
+            image_path=None,
             action_type=action_type,
             notify_on_failure=True,
+            include_image=False,
         )
 
     def queue_resident_display_sequence(
@@ -5687,6 +5689,7 @@ class DashboardWindow(QWidget):
         image_path=None,
         action_type="auto_send",
         notify_on_failure=False,
+        include_image=True,
     ):
         task = {
             "row": dict(row or {}),
@@ -5697,6 +5700,7 @@ class DashboardWindow(QWidget):
             "image_path": image_path,
             "action_type": action_type,
             "notify_on_failure": notify_on_failure,
+            "include_image": include_image,
             "user_id": self.current_user.get("id"),
             "username": self.current_user.get("username"),
             "server_mode": self.server_mode,
@@ -5714,6 +5718,7 @@ class DashboardWindow(QWidget):
                 task.get("success_message"),
                 task.get("label"),
                 image_path=task.get("image_path"),
+                include_image=task.get("include_image", True),
                 gateway=gateway,
                 base_url=task.get("base_url"),
             )
@@ -5727,6 +5732,7 @@ class DashboardWindow(QWidget):
         self.resident_display_finished.emit(task)
 
     def on_resident_display_finished(self, task):
+        self.end_button_busy(task.get("busy_state"))
         row = task.get("row") or {}
         payload = task.get("payload") or {}
         self.db.log_update(
@@ -5743,13 +5749,22 @@ class DashboardWindow(QWidget):
         )
         self.load_recent_logs()
         self.refresh_devices()
+        if task.get("notify_on_success") and task.get("success"):
+            self.show_info(task.get("success_title") or "Success", task.get("message") or "The request completed successfully.")
         if task.get("notify_on_failure") and not task.get("success"):
-            self.show_error("Display update", task.get("message") or "The resident was saved, but the display update failed.")
+            self.show_error(task.get("failure_title") or "Display update", task.get("message") or "The resident was saved, but the display update failed.")
 
-    def send_resident_display_sequence(self, row, device_id, payload, success_message, label, image_path=None, gateway=None, base_url=None):
+    def send_resident_display_sequence(self, row, device_id, payload, success_message, label, image_path=None, include_image=True, gateway=None, base_url=None):
         try:
             gateway = gateway or self.gateway
             target_base_url = base_url if base_url is not None else self.base_url()
+            if not include_image:
+                text_result = gateway.send_text(target_base_url, payload)
+                text_success = text_result["status_code"] == 200
+                response = {"text": text_result["body"], "image": {"ok": True, "skipped": True, "reason": "Photo send is manual"}}
+                message = success_message if text_success else self.result_error_message(text_result, f"{label} text failed.")
+                return text_success, message, response
+
             if self.server_mode and hasattr(gateway, "send_resident_display") and row and row.get("id"):
                 result = gateway.send_resident_display(target_base_url, row.get("id"), device_id)
                 body = result.get("body") or {}
@@ -6249,49 +6264,41 @@ class DashboardWindow(QWidget):
         payload = {"device_id": device_id, "image_path": self.selected_image_path}
 
         busy = self.begin_button_busy(getattr(self, "btn_send_image", None), "Sending...")
+        row = self.db.get_resident(self.selected_resident_id) or {}
+        task = {
+            "row": dict(row or {}),
+            "device_id": device_id,
+            "payload": payload,
+            "image_path": self.selected_image_path,
+            "action_type": "send_image",
+            "label": "LCD photo",
+            "busy_state": busy,
+            "notify_on_success": True,
+            "notify_on_failure": True,
+            "success_title": "LCD Photo",
+            "failure_title": "LCD Photo",
+            "user_id": self.current_user.get("id"),
+            "username": self.current_user.get("username"),
+            "server_mode": self.server_mode,
+            "base_url": self.base_url(),
+        }
+        threading.Thread(target=self._resident_photo_worker, args=(task,), daemon=True).start()
+
+    def _resident_photo_worker(self, task):
         try:
-            result = self.gateway.send_image(self.base_url(), device_id, self.selected_image_path)
-            success = result["status_code"] == 200
-            message = "Image sent successfully" if success else self.result_error_message(result, "Image send failed.")
-
-            self.db.log_update(
-                "send_image",
-                self.selected_resident_id,
-                self.current_resident_uid(),
-                device_id,
-                self.current_user.get("id"),
-                self.current_user.get("username"),
-                payload,
-                result["body"],
-                success,
-                message
-            )
-
-            self.load_recent_logs()
-            self.refresh_devices()
-
-            if success:
-                self.show_info("Success", message)
-            else:
-                self.show_error("Send failed", message)
-
-        except Exception as e:
-            self.db.log_update(
-                "send_image",
-                self.selected_resident_id,
-                self.current_resident_uid(),
-                device_id,
-                self.current_user.get("id"),
-                self.current_user.get("username"),
-                payload,
-                {"error": str(e)},
-                False,
-                str(e)
-            )
-            self.load_recent_logs()
-            self.show_error("Network Error", str(e))
-        finally:
-            self.end_button_busy(busy)
+            gateway = ServerGatewayClient() if task.get("server_mode") else GatewayClient()
+            result = gateway.send_image(task.get("base_url"), task.get("device_id"), task.get("image_path"))
+            body = result.get("body") or {}
+            success = result.get("status_code") == 200 and not (isinstance(body, dict) and body.get("ok") is False)
+            message = "Resident photo sent to LCD successfully." if success else self.result_error_message(result, "LCD photo send failed.")
+            task.update({"success": success, "message": message, "response": body})
+        except Exception as exc:
+            task.update({
+                "success": False,
+                "message": f"LCD photo could not finish. {friendly_error_message(str(exc))}",
+                "response": {"error": str(exc)},
+            })
+        self.resident_display_finished.emit(task)
 
     # ---------------------------- logs ----------------------------
 

@@ -35,6 +35,7 @@ class Device:
     rssi: Optional[int] = None
     heap: Optional[int] = None
     last_status_at: Optional[str] = None
+    epaper_busy: Optional[bool] = None
 
     @property
     def is_online(self) -> bool:
