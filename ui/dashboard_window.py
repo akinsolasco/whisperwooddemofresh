@@ -2624,32 +2624,35 @@ class DashboardWindow(QWidget):
         self.btn_choose_image = QPushButton("Choose LCD Image", self.upd_left)
         self.btn_choose_image.setGeometry(22, 488, 150, 42)
         self.btn_choose_image.setStyleSheet(self.secondary_btn_style())
+        self.btn_choose_image.setEnabled(False)
         self.btn_choose_image.hide()
 
         self.btn_send_image = QPushButton("Send Photo Only", self.upd_left)
         self.btn_send_image.setGeometry(360, 444, 152, 42)
         self.btn_send_image.setStyleSheet(self.secondary_btn_style())
+        self.btn_send_image.setEnabled(False)
         self.btn_send_image.hide()
 
         self.btn_clear_image = QPushButton("Clear Image", self.upd_left)
         self.btn_clear_image.setGeometry(312, 488, 120, 42)
         self.btn_clear_image.setStyleSheet(self.secondary_btn_style())
+        self.btn_clear_image.setEnabled(False)
         self.btn_clear_image.hide()
 
-        self.image_path_label = QLabel("Resident photos are attached and sent from Resident Records.", self.upd_left)
+        self.image_path_label = QLabel("Resident photos are managed in Resident Records. This page controls LCD power and global schedule only.", self.upd_left)
         self.image_path_label.setGeometry(22, 456, 490, 34)
         self.image_path_label.setWordWrap(True)
         self.image_path_label.setStyleSheet("font-size: 12px; color: #a7a7a7;")
 
-        manual_title = QLabel("Manual LCD Control", self.upd_left)
-        manual_title.setGeometry(22, 520, 180, 22)
+        manual_title = QLabel("Manual LCD Control - All Devices", self.upd_left)
+        manual_title.setGeometry(22, 520, 260, 22)
         manual_title.setStyleSheet("font-size: 15px; font-weight: 800; color: white;")
 
-        self.btn_lcd_on = QPushButton("Turn LCD ON", self.upd_left)
+        self.btn_lcd_on = QPushButton("All LCDs ON", self.upd_left)
         self.btn_lcd_on.setGeometry(22, 550, 150, 40)
         self.btn_lcd_on.setStyleSheet(self.primary_btn_style())
 
-        self.btn_lcd_off = QPushButton("Turn LCD OFF", self.upd_left)
+        self.btn_lcd_off = QPushButton("All LCDs OFF", self.upd_left)
         self.btn_lcd_off.setGeometry(184, 550, 150, 40)
         self.btn_lcd_off.setStyleSheet(self.secondary_btn_style())
 
@@ -2905,12 +2908,9 @@ class DashboardWindow(QWidget):
 
         self.btn_preview.clicked.connect(self.update_preview)
         self.btn_send_text.clicked.connect(self.send_text_update)
-        self.btn_choose_image.clicked.connect(self.choose_image)
-        self.btn_send_image.clicked.connect(self.send_image)
-        self.btn_clear_image.clicked.connect(self.clear_lcd_image)
         self.upd_target.currentIndexChanged.connect(lambda _index: self.on_update_target_changed())
-        self.btn_lcd_on.clicked.connect(lambda: self.send_lcd_command("on"))
-        self.btn_lcd_off.clicked.connect(lambda: self.send_lcd_command("off"))
+        self.btn_lcd_on.clicked.connect(lambda: self.send_lcd_command("on", "all"))
+        self.btn_lcd_off.clicked.connect(lambda: self.send_lcd_command("off", "all"))
         self.btn_save_schedule.clicked.connect(self.save_lcd_schedule)
         self.btn_refresh_approvals.clicked.connect(self.load_approvals)
         self.approval_table.cellClicked.connect(lambda row, _col: self.show_approval_detail(row))
@@ -3029,17 +3029,12 @@ class DashboardWindow(QWidget):
 
     def sync_resident_photo_labels(self):
         form_text = self.display_path_label(self.selected_image_path, "No resident photo attached")
-        schedule_text = self.display_path_label(
-            self.selected_image_path,
-            "No resident photo attached. Add one in Resident Records, then Save.",
-        )
         if hasattr(self, "resident_photo_label"):
             self.resident_photo_label.setText(form_text)
         if hasattr(self, "image_path_label"):
-            if self.selected_image_path:
-                self.image_path_label.setText(f"Resident photo saved with record: {schedule_text}. Send photos from Resident Records after text finishes.")
-            else:
-                self.image_path_label.setText("Resident photos are attached and sent from Resident Records.")
+            self.image_path_label.setText(
+                "Resident photos are managed in Resident Records. This page controls LCD power and global schedule only."
+            )
 
     def set_resident_photo_path(self, path):
         self.selected_image_path = path or None
@@ -3328,7 +3323,7 @@ class DashboardWindow(QWidget):
             self.txt_allergies, self.txt_note, self.txt_drinks, self.txt_schedule,
             self.chk_active, self.chk_safety_review, self.btn_attach_source,
             self.btn_attach_resident_photo, self.btn_clear_resident_photo,
-            self.btn_send_resident_photo, self.btn_choose_image, self.btn_clear_image,
+            self.btn_send_resident_photo,
         ]
         for widget in field_widgets:
             widget.setEnabled(self.can_edit_residents())
@@ -6136,14 +6131,20 @@ class DashboardWindow(QWidget):
         if not device_id:
             self.show_error("No device", "Please select a paired device first.")
             return
+        is_global_target = str(device_id).lower() == "all"
+        target_label = "all LCD devices" if is_global_target else str(device_id)
         payload = {"device_id": device_id, "command": command}
         button = self.btn_lcd_on if command == "on" else self.btn_lcd_off
         busy = self.begin_button_busy(button, f"LCD {command.upper()}...")
         try:
             result = self.gateway.send_lcd_command(self.base_url(), device_id, command)
-            success = result["status_code"] == 200
             response = result["body"]
-            message = f"LCD {command.upper()} command sent" if success else self.result_error_message(result, "LCD command failed.")
+            success = result["status_code"] == 200 and not (isinstance(response, dict) and response.get("ok") is False)
+            message = (
+                f"LCD {command.upper()} command sent to {target_label}."
+                if success
+                else self.result_error_message(result, "LCD command failed.")
+            )
         except Exception as e:
             success = False
             response = {"error": str(e)}
@@ -6154,7 +6155,7 @@ class DashboardWindow(QWidget):
             "lcd_command",
             self.selected_resident_id,
             self.current_resident_uid(),
-            device_id,
+            "ALL" if is_global_target else device_id,
             self.current_user.get("id"),
             self.current_user.get("username"),
             payload,
@@ -6195,7 +6196,8 @@ class DashboardWindow(QWidget):
         busy = self.begin_button_busy(getattr(self, "btn_save_schedule", None), "Saving...")
         try:
             result = self.gateway.save_schedule(self.base_url(), payload)
-            success = result["status_code"] == 200
+            body = result["body"]
+            success = result["status_code"] == 200 and not (isinstance(body, dict) and body.get("ok") is False)
             responses = [{"device_id": "all", "status_code": result["status_code"], "body": result["body"]}]
             message = (
                 f"Global LCD schedule saved for {len(devices)} device(s)."
