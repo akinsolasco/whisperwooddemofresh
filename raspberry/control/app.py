@@ -9,7 +9,7 @@ from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
 import os, json, platform, subprocess, shutil, psutil, requests, secrets, string, time
 
-app = FastAPI(title="Whisperwood Control Service", version="0.5.0")
+app = FastAPI(title="Whisperwood Control Service", version="0.5.1")
 STARTED_AT = datetime.utcnow()
 
 app.add_middleware(
@@ -810,7 +810,7 @@ def health():
     return {
         "ok": True,
         "service": "control",
-        "version": "0.5.0",
+        "version": "0.5.1",
         "hostname": platform.node(),
         "time": now(),
         "uptime": f"{uptime_s}s",
@@ -1476,7 +1476,7 @@ def operation_devices(x_whisperwood_key: str | None = Header(default=None)):
 @app.post("/operation/send")
 def operation_send(payload: Optional[dict] = Body(default=None), x_whisperwood_key: str | None = Header(default=None)):
     require_key(x_whisperwood_key)
-    return operation_request("POST", "/send", json=payload or {}, timeout=40)
+    return operation_request("POST", "/send", json=payload or {}, timeout=100)
 
 @app.post("/operation/send_image")
 async def operation_send_image(id: str = Form(default=""), image: UploadFile = File(...), x_whisperwood_key: str | None = Header(default=None)):
@@ -1530,7 +1530,7 @@ def operation_resident_display(payload: Optional[dict] = Body(default=None), x_w
     outbound = resident_display_payload(row, device_id)
     if not outbound.get("device_id"):
         raise HTTPException(status_code=400, detail="Resident is not paired to a device")
-    result = operation_request("POST", "/resident_display", json=outbound, timeout=80)
+    result = operation_request("POST", "/resident_display", json=outbound, timeout=150)
     log_action(
         "system",
         "resident_display",
@@ -1547,7 +1547,7 @@ def bootstrap_info(x_whisperwood_key: str | None = Header(default=None)):
     require_key(x_whisperwood_key)
     return {
         "ok": True,
-        "version": "0.5.0",
+        "version": "0.5.1",
         "database_user": "whisperwood_app",
         "default_users": [
             {"username": "admin", "password": "admin123", "role": "admin"},

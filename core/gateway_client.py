@@ -46,7 +46,7 @@ class GatewayClient:
         return devices
 
     def send_text(self, base_url: str, payload: Dict[str, Any]) -> Dict[str, Any]:
-        r = self.session.post(f"{base_url.rstrip('/')}/send", json=payload, timeout=8)
+        r = self.session.post(f"{base_url.rstrip('/')}/send", json=payload, timeout=100)
         try:
             body = r.json()
         except Exception:

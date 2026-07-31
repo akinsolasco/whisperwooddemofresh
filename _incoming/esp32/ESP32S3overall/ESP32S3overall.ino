@@ -19,7 +19,7 @@ static const char* DEFAULT_WIFI_SSID = "EPD-GATEWAY";
 static const char* DEFAULT_WIFI_PASS = "epaper123";
 static const char* DEFAULT_PI_HOST = "192.168.4.1";
 static const uint16_t DEFAULT_PI_PORT = 5000;
-static const uint8_t FIRMWARE_VERSION = 10;
+static const uint8_t FIRMWARE_VERSION = 11;
 static const uint32_t WIFI_RETRY_MS = 15000;
 static const uint32_t WIFI_CONNECT_GRACE_MS = 20000;
 static const uint32_t PI_RETRY_MS = 3000;
@@ -120,6 +120,7 @@ UBYTE* ImageBuffer = nullptr;
 #define MIN_SPACE_WIDTH 8
 #define VALUE_CONTINUATION_MAX_INDENT 180
 #define DISPLAY_BOTTOM_MARGIN 8
+static const bool EPD_FULL_WHITE_CLEAN_BEFORE_UPDATE = true;
 
 // ================= DEVICE ID =========================
 char DEVICE_ID[32] = { 0 };
@@ -778,6 +779,23 @@ static void displayFromData(const DisplayData& d) {
   if (!EPD_3IN6E_IsReady()) {
     stage("epaper: skipped busy timeout");
     return;
+  }
+
+  if (EPD_FULL_WHITE_CLEAN_BEFORE_UPDATE) {
+    stage("epaper: white clean");
+    EPD_3IN6E_Clear(EPD_3IN6E_WHITE);
+    if (!EPD_3IN6E_IsReady()) {
+      stage("epaper: white clean busy timeout");
+      return;
+    }
+    delay(300);
+
+    stage("epaper: reinit after clean");
+    EPD_3IN6E_Init();
+    if (!EPD_3IN6E_IsReady()) {
+      stage("epaper: skipped after clean busy timeout");
+      return;
+    }
   }
 
   const uint32_t bufBytes = ((uint32_t)DISPLAY_WIDTH * (uint32_t)DISPLAY_HEIGHT) / 2;

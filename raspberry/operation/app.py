@@ -25,13 +25,13 @@ LCD_H = 240
 LCD_BYTES = LCD_W * LCD_H * 2
 ONLINE_TIMEOUT_S = int(os.getenv("WHISPERWOOD_ONLINE_TIMEOUT_S", "30"))
 HEARTBEAT_INTERVAL_S = int(os.getenv("WHISPERWOOD_HEARTBEAT_INTERVAL_S", "5"))
-ACK_TIMEOUT_S = int(os.getenv("WHISPERWOOD_ACK_TIMEOUT_S", "28"))
+ACK_TIMEOUT_S = int(os.getenv("WHISPERWOOD_ACK_TIMEOUT_S", "90"))
 IMAGE_RESYNC_COOLDOWN_S = int(os.getenv("WHISPERWOOD_IMAGE_RESYNC_COOLDOWN_S", "60"))
 
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(IMAGE_CACHE_DIR, exist_ok=True)
 
-app = FastAPI(title="Whisperwood Operation Manager", version="0.3.1")
+app = FastAPI(title="Whisperwood Operation Manager", version="0.3.2")
 
 
 def utc_now() -> str:
@@ -840,7 +840,7 @@ def health() -> Dict[str, Any]:
     return {
         "ok": True,
         "service": "operation",
-        "version": "0.3.1",
+        "version": "0.3.2",
         "time": utc_now(),
         "tcp_host": HOST,
         "tcp_port": TCP_PORT,
