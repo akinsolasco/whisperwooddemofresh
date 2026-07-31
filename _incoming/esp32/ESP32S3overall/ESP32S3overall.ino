@@ -19,7 +19,7 @@ static const char* DEFAULT_WIFI_SSID = "EPD-GATEWAY";
 static const char* DEFAULT_WIFI_PASS = "epaper123";
 static const char* DEFAULT_PI_HOST = "192.168.4.1";
 static const uint16_t DEFAULT_PI_PORT = 5000;
-static const uint8_t FIRMWARE_VERSION = 16;
+static const uint8_t FIRMWARE_VERSION = 17;
 static const uint32_t WIFI_RETRY_MS = 15000;
 static const uint32_t WIFI_CONNECT_GRACE_MS = 20000;
 static const uint32_t PI_RETRY_MS = 3000;
@@ -886,20 +886,17 @@ static void displayFromData(const DisplayData& d) {
 }
 
 // ================= LCD DISPLAY =================
+static void hardResetLcdController();
+static void prepareLcdController(bool hardReset);
+
 static void initLCD() {
   stage("lcd: init");
-  digitalWrite(EPD_CS_PIN, HIGH);
-  tft.init();
-  tft.setRotation(1);
-  tft.setSwapBytes(true);
+  prepareLcdController(true);
   tft.fillScreen(TFT_BLACK);
 }
 
 static void showLCDPlaceholder() {
-  digitalWrite(EPD_CS_PIN, HIGH);
-  tft.init();
-  tft.setRotation(1);
-  tft.setSwapBytes(true);
+  prepareLcdController(false);
   tft.fillScreen(TFT_BLACK);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.setTextSize(2);
@@ -913,6 +910,31 @@ static void setLcdPower(bool on) {
   if (on) {
     delay(20);
   }
+}
+
+static void hardResetLcdController() {
+  digitalWrite(EPD_CS_PIN, HIGH);
+  digitalWrite(LCD_CS_PIN, HIGH);
+  pinMode(LCD_RST_PIN, OUTPUT);
+  digitalWrite(LCD_RST_PIN, LOW);
+  delay(60);
+  digitalWrite(LCD_RST_PIN, HIGH);
+  delay(160);
+}
+
+static void prepareLcdController(bool hardReset) {
+  digitalWrite(EPD_CS_PIN, HIGH);
+  digitalWrite(LCD_CS_PIN, HIGH);
+  if (hardReset) {
+    stage("lcd: hard reset");
+    hardResetLcdController();
+  }
+  tft.init();
+  tft.setRotation(1);
+  tft.setSwapBytes(true);
+  tft.wakeup();
+  tft.setBrightness(255);
+  delay(40);
 }
 
 static uint32_t checksumUpdate(uint32_t hash, const uint8_t* data, size_t len) {
@@ -1170,17 +1192,17 @@ static bool receiveImageToFlash(size_t totalBytes, uint32_t* checksumOut, const 
 
 static void displayLCDImage565(const uint16_t* img565) {
   setLcdPower(true);
-  digitalWrite(EPD_CS_PIN, HIGH);
-  tft.init();
-  tft.setRotation(1);
-  tft.setSwapBytes(true);
+  prepareLcdController(true);
   stage("lcd: pushImage");
+  tft.startWrite();
   tft.fillScreen(TFT_BLACK);
   tft.pushImage(0, 0, LCD_IMG_W, LCD_IMG_H, img565);
+  tft.endWrite();
+  tft.display();
   stage("lcd: done");
 }
 
-static bool displayLcdImageFromFlash() {
+static bool displayLcdImageFromFlash(bool hardReset = true) {
   if (!gFsReady || !gLcdImageStored) return false;
 
   File f = LittleFS.open(LCD_IMAGE_PATH, "r");
@@ -1192,23 +1214,24 @@ static bool displayLcdImageFromFlash() {
   }
 
   setLcdPower(true);
-  digitalWrite(EPD_CS_PIN, HIGH);
-  tft.init();
-  tft.setRotation(1);
-  tft.setSwapBytes(true);
+  prepareLcdController(hardReset);
   stage("lcd: pushImage flash");
+  tft.startWrite();
   tft.fillScreen(TFT_BLACK);
 
   uint16_t row[LCD_IMG_W];
   for (int y = 0; y < LCD_IMG_H; y++) {
     size_t readBytes = f.read((uint8_t*)row, LCD_IMG_W * 2);
     if (readBytes != LCD_IMG_W * 2) {
+      tft.endWrite();
       f.close();
       Serial.println("[FS] LCD image row read failed");
       return false;
     }
     tft.pushImage(0, y, LCD_IMG_W, 1, row);
   }
+  tft.endWrite();
+  tft.display();
 
   f.close();
   stage("lcd: done");

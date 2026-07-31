@@ -2629,31 +2629,32 @@ class DashboardWindow(QWidget):
         self.btn_send_image = QPushButton("Send Photo Only", self.upd_left)
         self.btn_send_image.setGeometry(360, 444, 152, 42)
         self.btn_send_image.setStyleSheet(self.secondary_btn_style())
+        self.btn_send_image.hide()
 
         self.btn_clear_image = QPushButton("Clear Image", self.upd_left)
         self.btn_clear_image.setGeometry(312, 488, 120, 42)
         self.btn_clear_image.setStyleSheet(self.secondary_btn_style())
         self.btn_clear_image.hide()
 
-        self.image_path_label = QLabel("Resident photo is attached in Resident Records. Use Send Photo Only after the e-paper text finishes.", self.upd_left)
-        self.image_path_label.setGeometry(22, 506, 490, 44)
+        self.image_path_label = QLabel("Resident photos are attached and sent from Resident Records.", self.upd_left)
+        self.image_path_label.setGeometry(22, 456, 490, 34)
         self.image_path_label.setWordWrap(True)
         self.image_path_label.setStyleSheet("font-size: 12px; color: #a7a7a7;")
 
         manual_title = QLabel("Manual LCD Control", self.upd_left)
-        manual_title.setGeometry(22, 566, 180, 22)
+        manual_title.setGeometry(22, 520, 180, 22)
         manual_title.setStyleSheet("font-size: 15px; font-weight: 800; color: white;")
 
         self.btn_lcd_on = QPushButton("Turn LCD ON", self.upd_left)
-        self.btn_lcd_on.setGeometry(22, 596, 150, 40)
+        self.btn_lcd_on.setGeometry(22, 550, 150, 40)
         self.btn_lcd_on.setStyleSheet(self.primary_btn_style())
 
         self.btn_lcd_off = QPushButton("Turn LCD OFF", self.upd_left)
-        self.btn_lcd_off.setGeometry(184, 596, 150, 40)
+        self.btn_lcd_off.setGeometry(184, 550, 150, 40)
         self.btn_lcd_off.setStyleSheet(self.secondary_btn_style())
 
         self.chk_sleep_no_image = QCheckBox("Keep LCD asleep if no image exists", self.upd_left)
-        self.chk_sleep_no_image.setGeometry(22, 644, 300, 24)
+        self.chk_sleep_no_image.setGeometry(22, 598, 300, 24)
         self.chk_sleep_no_image.setStyleSheet(self.chk_active.styleSheet())
 
         self.upd_right = QFrame(page)
@@ -3036,9 +3037,9 @@ class DashboardWindow(QWidget):
             self.resident_photo_label.setText(form_text)
         if hasattr(self, "image_path_label"):
             if self.selected_image_path:
-                self.image_path_label.setText(f"Resident photo saved with record: {schedule_text}. Use Send Photo Only when the e-paper is idle.")
+                self.image_path_label.setText(f"Resident photo saved with record: {schedule_text}. Send photos from Resident Records after text finishes.")
             else:
-                self.image_path_label.setText(schedule_text)
+                self.image_path_label.setText("Resident photos are attached and sent from Resident Records.")
 
     def set_resident_photo_path(self, path):
         self.selected_image_path = path or None
@@ -5305,7 +5306,7 @@ class DashboardWindow(QWidget):
             self.refresh_dashboard_summary()
             queued = self.send_saved_resident_if_paired()
             if queued:
-                self.show_info("Saved", f"{message}\n\nText update started in the background. Send the resident photo separately from LCD Schedule.")
+                self.show_info("Saved", f"{message}\n\nText update started in the background. Send the resident photo from Resident Records after the e-paper finishes.")
             else:
                 self.show_info("Saved", message)
 
@@ -5492,7 +5493,7 @@ class DashboardWindow(QWidget):
             "Auto-send",
             image_path=None,
             action_type="auto_send_after_save",
-            notify_on_failure=True,
+            notify_on_failure=False,
             include_image=False,
         )
         return True
@@ -5663,7 +5664,7 @@ class DashboardWindow(QWidget):
             )
             self.push_resident_row_to_device(row, device_id, "auto_send_after_pair")
             self.refresh_devices()
-            self.show_info("Paired", f"{row['full_name']} paired to {device_id}.\n\nText update started in the background. Send the resident photo separately from LCD Schedule.")
+            self.show_info("Paired", f"{row['full_name']} paired to {device_id}.\n\nText update started in the background. Send the resident photo from Resident Records after the e-paper finishes.")
         except Exception as e:
             self.show_error("Pair failed", str(e))
         finally:
