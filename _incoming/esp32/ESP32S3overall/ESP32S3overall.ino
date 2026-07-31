@@ -19,7 +19,7 @@ static const char* DEFAULT_WIFI_SSID = "EPD-GATEWAY";
 static const char* DEFAULT_WIFI_PASS = "epaper123";
 static const char* DEFAULT_PI_HOST = "192.168.4.1";
 static const uint16_t DEFAULT_PI_PORT = 5000;
-static const uint8_t FIRMWARE_VERSION = 9;
+static const uint8_t FIRMWARE_VERSION = 10;
 static const uint32_t WIFI_RETRY_MS = 15000;
 static const uint32_t WIFI_CONNECT_GRACE_MS = 20000;
 static const uint32_t PI_RETRY_MS = 3000;
@@ -637,7 +637,17 @@ static int drawString(int x, int y, const char* text, sFONT* font, UWORD bgColor
 }
 
 static void drawHighlightBox(int x, int y, int w, int h, UWORD bg) {
-  Paint_DrawRectangle(x, y, x + w, y + h, bg, DOT_PIXEL_1X1, DRAW_FILL_FULL);
+  int x0 = x;
+  int y0 = y;
+  int x1 = x + w;
+  int y1 = y + h;
+  if (x0 < 0) x0 = 0;
+  if (y0 < 0) y0 = 0;
+  if (x1 >= DISPLAY_WIDTH) x1 = DISPLAY_WIDTH - 1;
+  if (y1 >= DISPLAY_HEIGHT) y1 = DISPLAY_HEIGHT - 1;
+  if (x0 <= x1 && y0 <= y1) {
+    Paint_DrawRectangle(x0, y0, x1, y1, bg, DOT_PIXEL_1X1, DRAW_FILL_FULL);
+  }
 }
 
 static void drawStringWrappedHighlighted(
@@ -735,14 +745,22 @@ static int renderSection(const char* label, const char* value,
     currentX = drawString(currentX, currentY, labelText, font, EPD_3IN6E_WHITE, EPD_3IN6E_BLACK);
   }
 
-  int wrapX = startX + labelWidth;
-  if (wrapX > startX + VALUE_CONTINUATION_MAX_INDENT) {
-    wrapX = startX + VALUE_CONTINUATION_MAX_INDENT;
-  }
+  int wrapX = startX;
   drawStringWrappedHighlighted(&currentX, &currentY, value, font, wrapX, maxX,
                                sectionCode, hasSecHl, secBg, secFg);
 
   return currentY + font->Height + SECTION_GAP;
+}
+
+static bool hasDisplayText(const char* value) {
+  return value && value[0] != '\0';
+}
+
+static int renderSectionIfText(const char* label, const char* value,
+                               uint8_t sectionCode,
+                               int startX, int y, int maxX, sFONT* font) {
+  if (!hasDisplayText(value)) return y;
+  return renderSection(label, value, sectionCode, startX, y, maxX, font);
 }
 
 // ================= E-PAPER DISPLAY =================
@@ -791,13 +809,13 @@ static void displayFromData(const DisplayData& d) {
   joinListLineLocal((char(*)[32])d.texture, d.textureCount, textureLine, sizeof(textureLine));
   joinListLineLocal((char(*)[32])d.fluids, d.fluidsCount, fluidsLine, sizeof(fluidsLine));
 
-  y = renderSection("NAME", d.name, SEC_NAME, startX, y, maxX, &Font48);
-  y = renderSection("ROOM", d.room, SEC_ROOM, startX, y, maxX, &Font48);
-  y = renderSection("DIET", dietLine, SEC_DIET, startX, y, maxX, &Font48);
-  y = renderSection("TEXTURE", textureLine, SEC_TEXTURE, startX, y, maxX, &Font48);
-  y = renderSection("FLUIDS", fluidsLine, SEC_FLUIDS, startX, y, maxX, &Font48);
-  y = renderSection("NOTE", d.note, SEC_NOTE, startX, y, maxX, &Font48);
-  y = renderSection("DRINKS", d.drinks, SEC_DRINKS, startX, y, maxX, &Font48);
+  y = renderSectionIfText("NAME", d.name, SEC_NAME, startX, y, maxX, &Font48);
+  y = renderSectionIfText("ROOM", d.room, SEC_ROOM, startX, y, maxX, &Font48);
+  y = renderSectionIfText("DIET", dietLine, SEC_DIET, startX, y, maxX, &Font48);
+  y = renderSectionIfText("TEXTURE", textureLine, SEC_TEXTURE, startX, y, maxX, &Font48);
+  y = renderSectionIfText("FLUIDS", fluidsLine, SEC_FLUIDS, startX, y, maxX, &Font48);
+  y = renderSectionIfText("NOTE", d.note, SEC_NOTE, startX, y, maxX, &Font48);
+  y = renderSectionIfText("DRINKS", d.drinks, SEC_DRINKS, startX, y, maxX, &Font48);
 
   stage("epaper: display");
   EPD_3IN6E_Display(ImageBuffer);
@@ -824,6 +842,10 @@ static void initLCD() {
 }
 
 static void showLCDPlaceholder() {
+  digitalWrite(EPD_CS_PIN, HIGH);
+  tft.init();
+  tft.setRotation(1);
+  tft.setSwapBytes(true);
   tft.fillScreen(TFT_BLACK);
   tft.setTextColor(TFT_WHITE, TFT_BLACK);
   tft.setTextSize(2);
@@ -1095,6 +1117,9 @@ static bool receiveImageToFlash(size_t totalBytes, uint32_t* checksumOut, const 
 static void displayLCDImage565(const uint16_t* img565) {
   setLcdPower(true);
   digitalWrite(EPD_CS_PIN, HIGH);
+  tft.init();
+  tft.setRotation(1);
+  tft.setSwapBytes(true);
   stage("lcd: pushImage");
   tft.fillScreen(TFT_BLACK);
   tft.pushImage(0, 0, LCD_IMG_W, LCD_IMG_H, img565);
@@ -1114,6 +1139,9 @@ static bool displayLcdImageFromFlash() {
 
   setLcdPower(true);
   digitalWrite(EPD_CS_PIN, HIGH);
+  tft.init();
+  tft.setRotation(1);
+  tft.setSwapBytes(true);
   stage("lcd: pushImage flash");
   tft.fillScreen(TFT_BLACK);
 

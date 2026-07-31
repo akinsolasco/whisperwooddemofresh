@@ -5299,7 +5299,7 @@ class DashboardWindow(QWidget):
             self.refresh_dashboard_summary()
             queued = self.send_saved_resident_if_paired()
             if queued:
-                self.show_info("Saved", f"{message}\n\nDisplay update started in the background.")
+                self.show_info("Saved", f"{message}\n\nDisplay update started in the background: photo first, then e-paper text.")
             else:
                 self.show_info("Saved", message)
 
@@ -5656,7 +5656,7 @@ class DashboardWindow(QWidget):
             )
             self.push_resident_row_to_device(row, device_id, "auto_send_after_pair")
             self.refresh_devices()
-            self.show_info("Paired", f"{row['full_name']} paired to {device_id}.\n\nDisplay update started in the background.")
+            self.show_info("Paired", f"{row['full_name']} paired to {device_id}.\n\nDisplay update started in the background: photo first, then e-paper text.")
         except Exception as e:
             self.show_error("Pair failed", str(e))
         finally:
@@ -5752,34 +5752,43 @@ class DashboardWindow(QWidget):
             target_base_url = base_url if base_url is not None else self.base_url()
             if self.server_mode and hasattr(gateway, "send_resident_display") and row and row.get("id"):
                 result = gateway.send_resident_display(target_base_url, row.get("id"), device_id)
-                success = result["status_code"] == 200
-                message = success_message if success else self.result_error_message(result, f"{label} failed.")
                 body = result.get("body") or {}
+                success = (
+                    result["status_code"] == 200
+                    and not (isinstance(body, dict) and body.get("ok") is False)
+                    and not (isinstance(body, dict) and body.get("partial") is True)
+                )
+                message = success_message if success else self.result_error_message(result, f"{label} failed.")
                 if success and isinstance(body, dict):
                     image = body.get("image") or {}
                     if isinstance(image, dict) and image.get("ok") is False:
                         detail = image.get("message") or image.get("detail") or "Resident photo could not be sent."
                         message = f"{success_message}; {friendly_error_message(str(detail))}"
+                elif isinstance(body, dict) and body.get("message"):
+                    message = friendly_error_message(str(body.get("message")))
                 return success, message, result["body"]
 
-            text_result = gateway.send_text(target_base_url, payload)
-            text_success = text_result["status_code"] == 200
-            response = {"text": text_result["body"]}
-            success = text_success
-            message = success_message if text_success else self.result_error_message(text_result, f"{label} text failed.")
-
-            if text_success and image_path and os.path.isfile(str(image_path)):
+            response = {}
+            image_success = True
+            if image_path and os.path.isfile(str(image_path)):
                 image_result = gateway.send_image(target_base_url, device_id, str(image_path))
                 response["image"] = image_result["body"]
                 image_success = image_result["status_code"] == 200
-                success = image_success
-                message = (
-                    f"{success_message}; resident photo sent"
-                    if image_success
-                    else self.result_error_message(image_result, f"{label} photo failed.")
-                )
-            elif text_success:
+                if not image_success:
+                    message = self.result_error_message(image_result, f"{label} photo failed. E-paper text will still be attempted.")
+                else:
+                    message = f"{success_message}; resident photo sent"
+            else:
                 response["image"] = {"ok": True, "skipped": True, "reason": "No resident photo available"}
+
+            text_result = gateway.send_text(target_base_url, payload)
+            text_success = text_result["status_code"] == 200
+            response["text"] = text_result["body"]
+            success = text_success and image_success
+            if text_success and image_success:
+                message = f"{success_message}; e-paper text sent after photo step"
+            elif not text_success:
+                message = self.result_error_message(text_result, f"{label} text failed after the photo step.")
             return success, message, response
         except Exception as e:
             return False, f"{label} could not finish. {friendly_error_message(str(e))}", {"error": str(e)}

@@ -31,7 +31,7 @@ IMAGE_RESYNC_COOLDOWN_S = int(os.getenv("WHISPERWOOD_IMAGE_RESYNC_COOLDOWN_S", "
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(IMAGE_CACHE_DIR, exist_ok=True)
 
-app = FastAPI(title="Whisperwood Operation Manager", version="0.3.0")
+app = FastAPI(title="Whisperwood Operation Manager", version="0.3.1")
 
 
 def utc_now() -> str:
@@ -840,7 +840,7 @@ def health() -> Dict[str, Any]:
     return {
         "ok": True,
         "service": "operation",
-        "version": "0.3.0",
+        "version": "0.3.1",
         "time": utc_now(),
         "tcp_host": HOST,
         "tcp_port": TCP_PORT,
@@ -894,7 +894,6 @@ def resident_display(body: Optional[Dict[str, Any]] = Body(default=None)) -> Dic
     if not device_id:
         raise HTTPException(status_code=400, detail="missing device_id")
     payload["id"] = device_id
-    text_result = send_text_to_device(payload)
 
     image_result: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "No resident photo available"}
     image_path = str(payload.get("image_path") or "").strip()
@@ -918,22 +917,52 @@ def resident_display(body: Optional[Dict[str, Any]] = Body(default=None)) -> Dic
                     "skipped": False,
                     "status_code": exc.status_code,
                     "detail": exc.detail,
-                    "message": "Resident text was sent, but the LCD photo could not be sent.",
+                    "message": "LCD photo could not be sent; e-paper text will be attempted next.",
                 }
             except Exception as exc:
                 image_result = {
                     "ok": False,
                     "skipped": False,
                     "detail": str(exc),
-                    "message": "Resident text was sent, but the LCD photo could not be sent.",
+                    "message": "LCD photo could not be sent; e-paper text will be attempted next.",
                 }
+
+    text_result: Dict[str, Any]
+    try:
+        text_result = send_text_to_device(payload)
+    except HTTPException as exc:
+        return {
+            "ok": False,
+            "partial": bool(image_result.get("ok", False)),
+            "device_id": device_id,
+            "text": {
+                "ok": False,
+                "status_code": exc.status_code,
+                "detail": exc.detail,
+            },
+            "image": image_result,
+            "message": "Resident photo step finished, but the e-paper text could not be sent.",
+        }
+    except Exception as exc:
+        return {
+            "ok": False,
+            "partial": bool(image_result.get("ok", False)),
+            "device_id": device_id,
+            "text": {
+                "ok": False,
+                "detail": str(exc),
+            },
+            "image": image_result,
+            "message": "Resident photo step finished, but the e-paper text could not be sent.",
+        }
+
     if image_result.get("skipped"):
         detail = image_result.get("reason") or "Resident photo was skipped."
-        display_message = f"Resident text sent first; {detail}"
+        display_message = f"{detail}; resident text sent after the photo step."
     elif not bool(image_result.get("ok", False)):
-        display_message = "Resident text sent first; resident photo could not be sent."
+        display_message = "Resident photo could not be sent; resident text was sent after the photo attempt."
     else:
-        display_message = "Resident text sent first; resident photo sent after text ACK."
+        display_message = "Resident photo sent first; resident text sent after photo ACK."
 
     return {
         "ok": True,
