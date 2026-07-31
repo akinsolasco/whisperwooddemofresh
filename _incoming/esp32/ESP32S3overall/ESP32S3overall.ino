@@ -7,6 +7,7 @@
 #include "esp_heap_caps.h"
 #include <LovyanGFX.hpp>
 
+#include "BatteryTelemetry.h"
 #include "EPD_3in6e.h"
 #include "GUI_Paint.h"
 #include "DEV_Config.h"
@@ -200,18 +201,6 @@ static bool sendRawToPi(const char* text) {
 }
 
 // ================= BATTERY / CHARGER TELEMETRY =================
-struct BatteryTelemetry {
-  bool ok;
-  int percent;
-  int rawPercentX10;
-  int millivolts;
-  bool low;
-  bool alertPinLow;
-  bool usbPresent;
-  bool charging;
-  bool full;
-};
-
 static bool max17048Read16(uint8_t reg, uint16_t* out) {
   if (!out) return false;
   Wire.beginTransmission(MAX17048_ADDR);
