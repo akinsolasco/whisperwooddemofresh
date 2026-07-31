@@ -1393,29 +1393,33 @@ class DashboardWindow(QWidget):
         self.btn_clear_resident_photo.setGeometry(158, 756, 110, 36)
         self.btn_clear_resident_photo.setStyleSheet(self.secondary_btn_style())
 
+        self.btn_send_resident_photo = QPushButton("Send Photo", self.form_panel)
+        self.btn_send_resident_photo.setGeometry(278, 756, 120, 36)
+        self.btn_send_resident_photo.setStyleSheet(self.secondary_btn_style())
+
         self.resident_photo_label = QLabel("No resident photo attached", self.form_panel)
-        self.resident_photo_label.setGeometry(278, 756, 120, 36)
+        self.resident_photo_label.setGeometry(22, 796, 376, 18)
         self.resident_photo_label.setWordWrap(True)
         self.resident_photo_label.setStyleSheet("font-size: 11px; color: #a7a7a7;")
 
         self.chk_safety_review = QCheckBox("Needs safety review", self.form_panel)
-        self.chk_safety_review.setGeometry(22, 812, 160, 24)
+        self.chk_safety_review.setGeometry(22, 820, 160, 24)
         self.chk_safety_review.setStyleSheet(self.chk_active.styleSheet())
 
         self.btn_new_resident = QPushButton("New Resident", self.form_panel)
-        self.btn_new_resident.setGeometry(22, 848, 120, 42)
+        self.btn_new_resident.setGeometry(22, 856, 120, 42)
         self.btn_new_resident.setStyleSheet(self.secondary_btn_style())
 
         self.btn_save_resident = QPushButton("Save Resident", self.form_panel)
-        self.btn_save_resident.setGeometry(152, 848, 120, 42)
+        self.btn_save_resident.setGeometry(152, 856, 120, 42)
         self.btn_save_resident.setStyleSheet(self.primary_btn_style())
 
         self.btn_clear_fields = QPushButton("Clear Form", self.form_panel)
-        self.btn_clear_fields.setGeometry(282, 848, 116, 42)
+        self.btn_clear_fields.setGeometry(282, 856, 116, 42)
         self.btn_clear_fields.setStyleSheet(self.secondary_btn_style())
 
         self.btn_delete_resident = QPushButton("Delete Resident", self.form_panel)
-        self.btn_delete_resident.setGeometry(22, 898, 376, 38)
+        self.btn_delete_resident.setGeometry(22, 906, 376, 38)
         self.btn_delete_resident.setStyleSheet("""
             QPushButton {
                 background-color: #fff1f2;
@@ -1431,11 +1435,11 @@ class DashboardWindow(QWidget):
         """)
 
         review_label = QLabel("Staff review note", self.form_panel)
-        review_label.setGeometry(22, 950, 150, 18)
+        review_label.setGeometry(22, 958, 150, 18)
         review_label.setStyleSheet(self.label_style())
 
         self.nurse_review_comment = QTextEdit(self.form_panel)
-        self.nurse_review_comment.setGeometry(22, 974, 376, 68)
+        self.nurse_review_comment.setGeometry(22, 982, 376, 68)
         self.nurse_review_comment.setPlaceholderText("Write what needs review, the source checked, or the observation to verify.")
         self.nurse_review_comment.setStyleSheet(self.input_style())
 
@@ -2879,6 +2883,7 @@ class DashboardWindow(QWidget):
         self.btn_attach_source.clicked.connect(self.attach_source_document)
         self.btn_attach_resident_photo.clicked.connect(self.attach_resident_photo)
         self.btn_clear_resident_photo.clicked.connect(self.clear_lcd_image)
+        self.btn_send_resident_photo.clicked.connect(lambda: self.send_image(self.btn_send_resident_photo))
         self.btn_submit_review_request.clicked.connect(self.submit_resident_review_request)
 
         self.search_resident.textChanged.connect(self.filter_residents)
@@ -3322,7 +3327,7 @@ class DashboardWindow(QWidget):
             self.txt_allergies, self.txt_note, self.txt_drinks, self.txt_schedule,
             self.chk_active, self.chk_safety_review, self.btn_attach_source,
             self.btn_attach_resident_photo, self.btn_clear_resident_photo,
-            self.btn_choose_image, self.btn_clear_image,
+            self.btn_send_resident_photo, self.btn_choose_image, self.btn_clear_image,
         ]
         for widget in field_widgets:
             widget.setEnabled(self.can_edit_residents())
@@ -3349,6 +3354,7 @@ class DashboardWindow(QWidget):
             "btn_save_resident": resident_write,
             "btn_clear_fields": resident_write or self.is_nurse(),
             "btn_delete_resident": resident_write,
+            "btn_send_resident_photo": device_write,
             "btn_go_pairing_after_save": resident_write,
             "btn_pair_selected": device_write,
             "btn_unpair_selected": device_write,
@@ -6245,16 +6251,26 @@ class DashboardWindow(QWidget):
     def clear_lcd_image(self):
         self.set_resident_photo_path(None)
 
-    def send_image(self):
+    def send_image(self, busy_button=None):
+        if isinstance(busy_button, bool):
+            busy_button = None
         if not self.require_network_for_write("Sending LCD image"):
             return
         if not self.selected_resident_id:
             self.show_error("No resident", "Select or save a resident first.")
             return
 
-        device_id = self.selected_device_id()
+        from_resident_record = busy_button is getattr(self, "btn_send_resident_photo", None)
+        row = self.db.get_resident(self.selected_resident_id) or {}
+        if from_resident_record:
+            device_id = self.find_paired_device_id_for_resident(row)
+        else:
+            device_id = self.selected_device_id() or self.find_paired_device_id_for_resident(row)
         if not device_id:
-            self.show_error("No device", "Please select a device.")
+            if from_resident_record:
+                self.show_error("No paired device", "Pair this resident to a device before sending the attached photo.")
+            else:
+                self.show_error("No device", "Please select a device or pair this resident first.")
             return
 
         if not self.selected_image_path or not os.path.isfile(self.selected_image_path):
@@ -6263,8 +6279,8 @@ class DashboardWindow(QWidget):
 
         payload = {"device_id": device_id, "image_path": self.selected_image_path}
 
-        busy = self.begin_button_busy(getattr(self, "btn_send_image", None), "Sending...")
-        row = self.db.get_resident(self.selected_resident_id) or {}
+        button = busy_button or getattr(self, "btn_send_image", None)
+        busy = self.begin_button_busy(button, "Sending...")
         task = {
             "row": dict(row or {}),
             "device_id": device_id,

@@ -19,7 +19,7 @@ static const char* DEFAULT_WIFI_SSID = "EPD-GATEWAY";
 static const char* DEFAULT_WIFI_PASS = "epaper123";
 static const char* DEFAULT_PI_HOST = "192.168.4.1";
 static const uint16_t DEFAULT_PI_PORT = 5000;
-static const uint8_t FIRMWARE_VERSION = 12;
+static const uint8_t FIRMWARE_VERSION = 16;
 static const uint32_t WIFI_RETRY_MS = 15000;
 static const uint32_t WIFI_CONNECT_GRACE_MS = 20000;
 static const uint32_t PI_RETRY_MS = 3000;
@@ -847,8 +847,8 @@ static void displayFromData(const DisplayData& d) {
   stage("epaper: render");
   Paint_NewImage(ImageBuffer, DISPLAY_WIDTH, DISPLAY_HEIGHT, 0, EPD_3IN6E_WHITE);
   Paint_SelectImage(ImageBuffer);
-  Paint_Clear(EPD_3IN6E_WHITE);
   Paint_SetScale(6);
+  Paint_Clear(EPD_3IN6E_WHITE);
 
   int startX = MARGIN_LEFT;
   int maxX = DISPLAY_WIDTH - MARGIN_RIGHT;
