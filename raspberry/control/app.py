@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Header, HTTPException, UploadFile, File, Form, Body
 from fastapi.responses import FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from datetime import datetime
 from typing import Optional, Any
 from sqlalchemy import create_engine, text
@@ -786,7 +786,7 @@ class BatteryAlertSettingsPayload(BaseModel):
     low_threshold: int = 20
     critical_threshold: int = 10
     popup_cooldown_minutes: int = 30
-    recipient_roles: list[str] = ["IT_ADMIN"]
+    recipient_roles: list[str] = Field(default_factory=lambda: ["IT_ADMIN"])
 
 
 def resident_sql_values(payload: ResidentPayload, resident_id: int | None = None):
