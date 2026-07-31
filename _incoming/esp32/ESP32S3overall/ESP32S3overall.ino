@@ -19,7 +19,7 @@ static const char* DEFAULT_WIFI_SSID = "EPD-GATEWAY";
 static const char* DEFAULT_WIFI_PASS = "epaper123";
 static const char* DEFAULT_PI_HOST = "192.168.4.1";
 static const uint16_t DEFAULT_PI_PORT = 5000;
-static const uint8_t FIRMWARE_VERSION = 7;
+static const uint8_t FIRMWARE_VERSION = 8;
 static const uint32_t WIFI_RETRY_MS = 15000;
 static const uint32_t WIFI_CONNECT_GRACE_MS = 20000;
 static const uint32_t PI_RETRY_MS = 3000;
@@ -686,22 +686,8 @@ static void drawStringWrappedHighlighted(
     memcpy(word, wordStart, copyLen);
     word[copyLen] = '\0';
 
-    uint8_t vbg = C_WHITE;
-    uint8_t vfg = C_BLACK;
-    bool hasValHl = getValueHighlightByCode(sectionCode, word, &vbg, &vfg);
-
     UWORD bgColor = EPD_3IN6E_WHITE;
     UWORD fgColor = EPD_3IN6E_BLACK;
-
-    if (hasValHl) {
-      bgColor = colorCodeToEpd(vbg);
-      fgColor = colorCodeToEpd(vfg);
-      drawHighlightBox(*cx - 2, *cy - 2, wordWidth + 4, font->Height + 4, bgColor);
-    } else if (hasSectionHighlight) {
-      bgColor = colorCodeToEpd(sectionBgCode);
-      fgColor = colorCodeToEpd(sectionFgCode);
-      drawHighlightBox(*cx - 2, *cy - 2, wordWidth + 4, font->Height + 4, bgColor);
-    }
 
     for (int i = 0; i < copyLen; i++) {
       char ch[2] = { word[i], '\0' };
@@ -720,27 +706,18 @@ static int renderSection(const char* label, const char* value,
 
   int currentX = startX, currentY = y;
 
-  uint8_t secBg = C_WHITE;
-  uint8_t secFg = C_BLACK;
-  bool hasSecHl = getSectionHighlightByCode(sectionCode, &secBg, &secFg);
-
   char labelText[24];
   snprintf(labelText, sizeof(labelText), "%s: ", label);
   int labelWidth = getTextWidth(labelText, font);
 
-  if (hasSecHl) {
-    drawHighlightBox(currentX - 2, currentY - 2, labelWidth + 4, font->Height + 4, colorCodeToEpd(secBg));
-    currentX = drawString(currentX, currentY, labelText, font, colorCodeToEpd(secBg), colorCodeToEpd(secFg));
-  } else {
-    currentX = drawString(currentX, currentY, labelText, font, EPD_3IN6E_WHITE, EPD_3IN6E_BLACK);
-  }
+  currentX = drawString(currentX, currentY, labelText, font, EPD_3IN6E_WHITE, EPD_3IN6E_BLACK);
 
   int wrapX = startX + labelWidth;
   if (wrapX > startX + VALUE_CONTINUATION_MAX_INDENT) {
     wrapX = startX + VALUE_CONTINUATION_MAX_INDENT;
   }
   drawStringWrappedHighlighted(&currentX, &currentY, value, font, wrapX, maxX,
-                               sectionCode, hasSecHl, secBg, secFg);
+                               sectionCode, false, C_WHITE, C_BLACK);
 
   return currentY + font->Height + SECTION_GAP;
 }
