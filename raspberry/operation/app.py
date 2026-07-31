@@ -260,9 +260,9 @@ def record_ack(st: ConnState, kind: str, seq: int, line: str) -> None:
     kv = parse_kv_line(line)
     ok = str(kv.get("ok", "")).lower() in {"1", "true", "yes", "ok"}
     with LOCK:
-        st.ack_results[key] = {"ok": ok, "line": line, "values": kv, "time": utc_now()}
         event = st.ack_events.get(key)
         if event:
+            st.ack_results[key] = {"ok": ok, "line": line, "values": kv, "time": utc_now()}
             event.set()
 
 
@@ -686,6 +686,9 @@ def send_text_to_device(body: Dict[str, Any]) -> Dict[str, Any]:
 
     acked = event.wait(ACK_TIMEOUT_S)
     result = pop_ack_result(st, "text", seq, timed_out=not acked)
+    with LOCK:
+        if st.pending_seq == seq:
+            st.pending_seq = None
     if not result.get("ok"):
         raise HTTPException(status_code=504 if result.get("timeout") else 502, detail=result)
     return {"ok": True, "seq": seq, "ack": result, "line": line}
@@ -714,6 +717,9 @@ def send_rgb565_to_device(device_id: str, rgb565: bytes, cache_after_ack: bool =
 
     acked = event.wait(ACK_TIMEOUT_S)
     result = pop_ack_result(st, "image", seq, timed_out=not acked)
+    with LOCK:
+        if st.pending_img_seq == seq:
+            st.pending_img_seq = None
     if not result.get("ok"):
         raise HTTPException(status_code=504 if result.get("timeout") else 502, detail=result)
     if cache_after_ack:
@@ -748,6 +754,17 @@ def send_cached_image_to_device(device_id: str) -> Dict[str, Any]:
     if not rgb565:
         raise HTTPException(status_code=404, detail="No cached LCD image for device")
     return send_rgb565_to_device(device_id, rgb565, cache_after_ack=False)
+
+
+def firmware_major(st: ConnState) -> Optional[int]:
+    raw = str(st.fw or "").strip()
+    if not raw:
+        return None
+    head = raw.split(".", 1)[0]
+    try:
+        return int(head)
+    except ValueError:
+        return None
 
 
 def queue_cached_image_resync(st: ConnState, reason: str) -> None:
@@ -791,6 +808,9 @@ def send_lcd_to_device(device_id: str, command: str) -> Dict[str, Any]:
         raise HTTPException(status_code=500, detail=f"lcd send failed: {exc}") from exc
     acked = event.wait(ACK_TIMEOUT_S)
     result = pop_ack_result(st, "lcd", seq, timed_out=not acked)
+    with LOCK:
+        if st.pending_lcd_seq == seq:
+            st.pending_lcd_seq = None
     if not result.get("ok"):
         raise HTTPException(status_code=504 if result.get("timeout") else 502, detail=result)
     return {"ok": True, "seq": seq, "ack": result, "line": line}
@@ -879,12 +899,47 @@ def resident_display(body: Optional[Dict[str, Any]] = Body(default=None)) -> Dic
     image_result: Dict[str, Any] = {"ok": True, "skipped": True, "reason": "No resident photo available"}
     image_path = str(payload.get("image_path") or "").strip()
     if image_path and os.path.exists(image_path):
-        with open(image_path, "rb") as fh:
-            image_result = send_image_to_device(str(device_id), fh.read())
+        st = get_device_state(str(device_id))
+        fw = firmware_major(st)
+        if fw is not None and fw < 7:
+            image_result = {
+                "ok": True,
+                "skipped": True,
+                "reason": "LCD photo transfer skipped until ESP32 firmware 7 is installed.",
+                "firmware": st.fw,
+            }
+        else:
+            try:
+                with open(image_path, "rb") as fh:
+                    image_result = send_image_to_device(str(device_id), fh.read())
+            except HTTPException as exc:
+                image_result = {
+                    "ok": False,
+                    "skipped": False,
+                    "status_code": exc.status_code,
+                    "detail": exc.detail,
+                    "message": "Resident text was sent, but the LCD photo could not be sent.",
+                }
+            except Exception as exc:
+                image_result = {
+                    "ok": False,
+                    "skipped": False,
+                    "detail": str(exc),
+                    "message": "Resident text was sent, but the LCD photo could not be sent.",
+                }
+    if image_result.get("skipped"):
+        detail = image_result.get("reason") or "Resident photo was skipped."
+        display_message = f"Resident text sent first; {detail}"
+    elif not bool(image_result.get("ok", False)):
+        display_message = "Resident text sent first; resident photo could not be sent."
+    else:
+        display_message = "Resident text sent first; resident photo sent after text ACK."
+
     return {
         "ok": True,
+        "partial": not bool(image_result.get("ok", False)),
         "device_id": device_id,
         "text": text_result,
         "image": image_result,
-        "message": "Resident text sent first; resident photo sent after text ACK.",
+        "message": display_message,
     }

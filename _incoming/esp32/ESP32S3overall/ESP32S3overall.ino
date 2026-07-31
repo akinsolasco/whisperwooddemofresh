@@ -19,7 +19,7 @@ static const char* DEFAULT_WIFI_SSID = "EPD-GATEWAY";
 static const char* DEFAULT_WIFI_PASS = "epaper123";
 static const char* DEFAULT_PI_HOST = "192.168.4.1";
 static const uint16_t DEFAULT_PI_PORT = 5000;
-static const uint8_t FIRMWARE_VERSION = 6;
+static const uint8_t FIRMWARE_VERSION = 7;
 static const uint32_t WIFI_RETRY_MS = 15000;
 static const uint32_t WIFI_CONNECT_GRACE_MS = 20000;
 static const uint32_t PI_RETRY_MS = 3000;
@@ -101,6 +101,7 @@ LGFX tft;
 #define LCD_IMG_BYTES (LCD_IMG_W * LCD_IMG_H * 2)
 #define LCD_IMAGE_PATH "/lcd_image.rgb565"
 #define LCD_IMAGE_TMP_PATH "/lcd_image.tmp"
+#define LCD_FILE_CHUNK_BYTES 1024
 
 uint16_t* lcdImageBuf = nullptr;
 static bool lcdPowerOn = true;
@@ -117,6 +118,8 @@ UBYTE* ImageBuffer = nullptr;
 #define SECTION_GAP 14
 #define LINE_SPACING 4
 #define MIN_SPACE_WIDTH 8
+#define VALUE_CONTINUATION_MAX_INDENT 180
+#define DISPLAY_BOTTOM_MARGIN 8
 
 // ================= DEVICE ID =========================
 char DEVICE_ID[32] = { 0 };
@@ -648,11 +651,14 @@ static void drawStringWrappedHighlighted(
   uint8_t sectionFgCode) {
   const char* ptr = text;
   while (*ptr) {
+    if (*cy > DISPLAY_HEIGHT - font->Height - DISPLAY_BOTTOM_MARGIN) return;
+
     while (*ptr == ' ') {
       int sw = getCharWidth(' ', font);
       if (*cx + sw > maxX) {
         *cx = wrapX;
         *cy += font->Height + LINE_SPACING;
+        if (*cy > DISPLAY_HEIGHT - font->Height - DISPLAY_BOTTOM_MARGIN) return;
       }
       *cx += sw;
       ptr++;
@@ -671,6 +677,7 @@ static void drawStringWrappedHighlighted(
     if (*cx + wordWidth > maxX && *cx > wrapX) {
       *cx = wrapX;
       *cy += font->Height + LINE_SPACING;
+      if (*cy > DISPLAY_HEIGHT - font->Height - DISPLAY_BOTTOM_MARGIN) return;
     }
 
     char word[64];
@@ -707,6 +714,10 @@ static void drawStringWrappedHighlighted(
 static int renderSection(const char* label, const char* value,
                          uint8_t sectionCode,
                          int startX, int y, int maxX, sFONT* font) {
+  if (y > DISPLAY_HEIGHT - font->Height - DISPLAY_BOTTOM_MARGIN) {
+    return y;
+  }
+
   int currentX = startX, currentY = y;
 
   uint8_t secBg = C_WHITE;
@@ -724,7 +735,10 @@ static int renderSection(const char* label, const char* value,
     currentX = drawString(currentX, currentY, labelText, font, EPD_3IN6E_WHITE, EPD_3IN6E_BLACK);
   }
 
-  int wrapX = startX;
+  int wrapX = startX + labelWidth;
+  if (wrapX > startX + VALUE_CONTINUATION_MAX_INDENT) {
+    wrapX = startX + VALUE_CONTINUATION_MAX_INDENT;
+  }
   drawStringWrappedHighlighted(&currentX, &currentY, value, font, wrapX, maxX,
                                sectionCode, hasSecHl, secBg, secFg);
 
@@ -825,13 +839,16 @@ static void setLcdPower(bool on) {
   }
 }
 
-static uint32_t checksumBytes(const uint8_t* data, size_t len) {
-  uint32_t hash = 2166136261UL;
+static uint32_t checksumUpdate(uint32_t hash, const uint8_t* data, size_t len) {
   for (size_t i = 0; i < len; i++) {
     hash ^= data[i];
     hash *= 16777619UL;
   }
   return hash;
+}
+
+static uint32_t checksumBytes(const uint8_t* data, size_t len) {
+  return checksumUpdate(2166136261UL, data, len);
 }
 
 static void releaseLcdImageBuffer() {
@@ -965,6 +982,116 @@ static bool receiveExactBytes(uint8_t* dst, size_t totalBytes, uint32_t timeoutM
   return true;
 }
 
+static bool discardExactBytes(size_t totalBytes, uint32_t timeoutMs = 10000) {
+  uint8_t buf[LCD_FILE_CHUNK_BYTES];
+  size_t received = 0;
+  uint32_t start = millis();
+
+  while (received < totalBytes) {
+    if (!client.connected()) {
+      gPiSessionOnline = false;
+      return false;
+    }
+
+    int avail = client.available();
+    if (avail > 0) {
+      size_t want = totalBytes - received;
+      if (want > sizeof(buf)) want = sizeof(buf);
+      if ((size_t)avail < want) want = (size_t)avail;
+      int n = client.read(buf, want);
+      if (n > 0) {
+        received += (size_t)n;
+        start = millis();
+      }
+    } else {
+      if (millis() - start > timeoutMs) {
+        client.stop();
+        gPiSessionOnline = false;
+        return false;
+      }
+      delay(1);
+    }
+  }
+  return true;
+}
+
+static bool receiveImageToFlash(size_t totalBytes, uint32_t* checksumOut, const char** errOut, uint32_t timeoutMs = 15000) {
+  if (checksumOut) *checksumOut = 0;
+  if (errOut) *errOut = "";
+  if (!gFsReady) {
+    if (errOut) *errOut = "nofs";
+    discardExactBytes(totalBytes, timeoutMs);
+    return false;
+  }
+
+  LittleFS.remove(LCD_IMAGE_TMP_PATH);
+  File f = LittleFS.open(LCD_IMAGE_TMP_PATH, "w");
+  if (!f) {
+    if (errOut) *errOut = "fsopen";
+    discardExactBytes(totalBytes, timeoutMs);
+    return false;
+  }
+
+  uint8_t buf[LCD_FILE_CHUNK_BYTES];
+  size_t received = 0;
+  uint32_t start = millis();
+  uint32_t hash = 2166136261UL;
+
+  while (received < totalBytes) {
+    if (!client.connected()) {
+      f.close();
+      LittleFS.remove(LCD_IMAGE_TMP_PATH);
+      gPiSessionOnline = false;
+      if (errOut) *errOut = "disconnect";
+      return false;
+    }
+
+    int avail = client.available();
+    if (avail > 0) {
+      size_t want = totalBytes - received;
+      if (want > sizeof(buf)) want = sizeof(buf);
+      if ((size_t)avail < want) want = (size_t)avail;
+      int n = client.read(buf, want);
+      if (n > 0) {
+        size_t written = f.write(buf, (size_t)n);
+        if (written != (size_t)n) {
+          f.close();
+          LittleFS.remove(LCD_IMAGE_TMP_PATH);
+          discardExactBytes(totalBytes - received - (size_t)n, timeoutMs);
+          if (errOut) *errOut = "fswrite";
+          return false;
+        }
+        hash = checksumUpdate(hash, buf, (size_t)n);
+        received += (size_t)n;
+        start = millis();
+      }
+    } else {
+      if (millis() - start > timeoutMs) {
+        f.close();
+        LittleFS.remove(LCD_IMAGE_TMP_PATH);
+        client.stop();
+        gPiSessionOnline = false;
+        if (errOut) *errOut = "rxtimeout";
+        return false;
+      }
+      delay(1);
+    }
+  }
+
+  f.close();
+  LittleFS.remove(LCD_IMAGE_PATH);
+  if (!LittleFS.rename(LCD_IMAGE_TMP_PATH, LCD_IMAGE_PATH)) {
+    LittleFS.remove(LCD_IMAGE_TMP_PATH);
+    if (errOut) *errOut = "fsrename";
+    return false;
+  }
+
+  gLcdImageStored = true;
+  if (checksumOut) *checksumOut = hash;
+  Serial.println("[FS] LCD image streamed to flash");
+  return true;
+}
+
 static void displayLCDImage565(const uint16_t* img565) {
   setLcdPower(true);
   digitalWrite(EPD_CS_PIN, HIGH);
@@ -972,6 +1099,38 @@ static void displayLCDImage565(const uint16_t* img565) {
   tft.fillScreen(TFT_BLACK);
   tft.pushImage(0, 0, LCD_IMG_W, LCD_IMG_H, img565);
   stage("lcd: done");
+}
+
+static bool displayLcdImageFromFlash() {
+  if (!gFsReady || !gLcdImageStored) return false;
+
+  File f = LittleFS.open(LCD_IMAGE_PATH, "r");
+  if (!f || f.size() != LCD_IMG_BYTES) {
+    if (f) f.close();
+    gLcdImageStored = false;
+    Serial.println("[FS] Stored LCD image missing or wrong size");
+    return false;
+  }
+
+  setLcdPower(true);
+  digitalWrite(EPD_CS_PIN, HIGH);
+  stage("lcd: pushImage flash");
+  tft.fillScreen(TFT_BLACK);
+
+  uint16_t row[LCD_IMG_W];
+  for (int y = 0; y < LCD_IMG_H; y++) {
+    size_t readBytes = f.read((uint8_t*)row, LCD_IMG_W * 2);
+    if (readBytes != LCD_IMG_W * 2) {
+      f.close();
+      Serial.println("[FS] LCD image row read failed");
+      return false;
+    }
+    tft.pushImage(0, y, LCD_IMG_W, 1, row);
+  }
+
+  f.close();
+  stage("lcd: done");
+  return true;
 }
 
 static void handleImageLine(const char* line) {
@@ -996,20 +1155,51 @@ static void handleImageLine(const char* line) {
   }
 
   if (size != LCD_IMG_BYTES) {
+    discardExactBytes((size_t)size, 15000);
     char ack[96];
     snprintf(ack, sizeof(ack), "ACKIMG seq=%ld ok=0 err=size\n", seq);
     sendRawToPi(ack);
     return;
   }
 
+  Serial.printf("[LCD] expecting %ld bytes\n", size);
+  uint32_t checksum = 0;
+  const char* err = "";
+
+  if (gFsReady) {
+    if (receiveImageToFlash((size_t)size, &checksum, &err, 15000)) {
+      Serial.printf("[LCD] image checksum=0x%08lX\n", (unsigned long)checksum);
+      bool shown = displayLcdImageFromFlash();
+      releaseLcdImageBuffer();
+      char ack[128];
+      snprintf(
+        ack,
+        sizeof(ack),
+        "ACKIMG seq=%ld ok=1 persisted=1 lcd_on=%d shown=%d checksum=%08lX\n",
+        seq,
+        lcdPowerOn ? 1 : 0,
+        shown ? 1 : 0,
+        (unsigned long)checksum
+      );
+      sendRawToPi(ack);
+      Serial.printf("[ACKIMG] sent seq=%ld\n", seq);
+      return;
+    }
+
+    char ack[96];
+    snprintf(ack, sizeof(ack), "ACKIMG seq=%ld ok=0 err=%s\n", seq, err && err[0] ? err : "fs");
+    sendRawToPi(ack);
+    return;
+  }
+
   if (!ensureLcdImageBuffer()) {
+    discardExactBytes((size_t)size, 15000);
     char ack[96];
     snprintf(ack, sizeof(ack), "ACKIMG seq=%ld ok=0 err=nomem\n", seq);
     sendRawToPi(ack);
     return;
   }
 
-  Serial.printf("[LCD] expecting %ld bytes\n", size);
   bool ok = receiveExactBytes((uint8_t*)lcdImageBuf, (size_t)size, 15000);
   if (!ok) {
     char ack[96];
@@ -1018,7 +1208,7 @@ static void handleImageLine(const char* line) {
     return;
   }
 
-  uint32_t checksum = checksumBytes((const uint8_t*)lcdImageBuf, LCD_IMG_BYTES);
+  checksum = checksumBytes((const uint8_t*)lcdImageBuf, LCD_IMG_BYTES);
   Serial.printf("[LCD] image checksum=0x%08lX\n", (unsigned long)checksum);
   bool persisted = saveLcdImageToFlash();
   displayLCDImage565(lcdImageBuf);
@@ -1063,11 +1253,10 @@ static void handleLcdLine(const char* line) {
   if (strEqNoCase(cmdBuf, "on")) {
     bool hasStoredImage = gLcdImageStored || lcdImageBuf;
     setLcdPower(true);
-    if (!lcdImageBuf && gLcdImageStored) {
-      loadLcdImageFromFlash();
-    }
     if (lcdImageBuf) {
       displayLCDImage565(lcdImageBuf);
+    } else if (gLcdImageStored && displayLcdImageFromFlash()) {
+      hasStoredImage = true;
     } else {
       showLCDPlaceholder();
     }
@@ -1584,11 +1773,8 @@ void setup() {
   setLcdPower(false);
   initLCD();
   initPersistentFileSystem();
-  if (loadLcdImageFromFlash()) {
-    displayLCDImage565(lcdImageBuf);
-    if (gLcdImageStored) {
-      releaseLcdImageBuffer();
-    }
+  if (displayLcdImageFromFlash()) {
+    releaseLcdImageBuffer();
   } else {
     Serial.println("[LCD] no stored image; LCD backlight kept off");
   }

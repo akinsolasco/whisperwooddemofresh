@@ -3,6 +3,7 @@ import re
 import json
 import secrets
 import string
+import threading
 import time
 from typing import Optional, List, Dict, Any
 
@@ -30,6 +31,7 @@ from core.server_gateway_client import ServerGatewayClient
 
 class DashboardWindow(QWidget):
     logout_requested = pyqtSignal()
+    resident_display_finished = pyqtSignal(dict)
 
     def __init__(self, current_user: Optional[Dict[str, Any]] = None):
         super().__init__()
@@ -89,6 +91,7 @@ class DashboardWindow(QWidget):
 
         self.build_ui()
         self.bind_events()
+        self.resident_display_finished.connect(self.on_resident_display_finished)
         self.fit_to_screen()
         self.apply_role_permissions()
         self.apply_write_lock()
@@ -5294,8 +5297,11 @@ class DashboardWindow(QWidget):
             self.load_approvals()
             self.load_resident_audit()
             self.refresh_dashboard_summary()
-            self.send_saved_resident_if_paired()
-            self.show_info("Saved", message)
+            queued = self.send_saved_resident_if_paired()
+            if queued:
+                self.show_info("Saved", f"{message}\n\nDisplay update started in the background.")
+            else:
+                self.show_info("Saved", message)
 
         except Exception as e:
             self.show_error("Save failed", str(e))
@@ -5418,37 +5424,71 @@ class DashboardWindow(QWidget):
         finally:
             self.end_button_busy(busy)
 
+    def find_paired_device_id_for_resident(self, row):
+        row = dict(row or {})
+        direct = row.get("paired_device_id") or row.get("device_id")
+        if direct:
+            return str(direct)
+
+        resident_id = row.get("id") or self.selected_resident_id
+        resident_uid = row.get("resident_uid")
+        resident_name = row.get("full_name")
+        for device in self.safe_get_devices():
+            device_id = device.get("device_id") or device.get("id")
+            if not device_id:
+                continue
+            paired_id = device.get("paired_resident_id") or device.get("resident_id")
+            if resident_id is not None and str(paired_id or "") == str(resident_id):
+                return str(device_id)
+            if resident_uid and str(device.get("resident_uid") or "") == str(resident_uid):
+                return str(device_id)
+            if resident_name and str(device.get("resident_name") or "") == str(resident_name):
+                return str(device_id)
+        return None
+
+    def build_gateway_payload_from_row(self, row, device_id):
+        row = dict(row or {})
+        payload = {
+            "id": device_id,
+            "name": row.get("full_name") or "",
+            "room": row.get("room") or "",
+            "note": row.get("note") or "",
+            "drinks": row.get("drinks") or "",
+        }
+        diet = row.get("diet")
+        if diet:
+            payload["diet"] = [x.strip() for x in str(diet).split(",") if x.strip()]
+        texture = row.get("texture") or row.get("allergies")
+        if texture:
+            texture_items = [x.strip() for x in str(texture).split(",") if x.strip()]
+            payload["texture"] = texture_items
+            payload["allergies"] = texture_items
+        fluids = row.get("fluids") or row.get("schedule")
+        if fluids:
+            payload["fluids"] = str(fluids)
+            payload["schedule"] = str(fluids)
+        return payload
+
     def send_saved_resident_if_paired(self):
         if not self.gateway_online:
-            return
+            return False
         row = self.db.get_resident(self.selected_resident_id)
-        device_id = row.get("paired_device_id") if row else None
+        device_id = self.find_paired_device_id_for_resident(row)
         if not device_id:
-            return
+            return False
 
-        payload = self.build_gateway_payload(device_id)
-        success, message, response = self.send_resident_display_sequence(
+        payload = self.build_gateway_payload_from_row(row, device_id)
+        self.queue_resident_display_sequence(
             row,
             device_id,
             payload,
             "Saved resident sent to paired device",
             "Auto-send",
             image_path=self.selected_image_path or row.get("lcd_image_path"),
+            action_type="auto_send_after_save",
+            notify_on_failure=True,
         )
-
-        self.db.log_update(
-            "auto_send_after_save",
-            self.selected_resident_id,
-            self.current_resident_uid(),
-            device_id,
-            self.current_user.get("id"),
-            self.current_user.get("username"),
-            payload,
-            response,
-            success,
-            message
-        )
-        self.load_recent_logs()
+        return True
 
     # ---------------------------- devices / pairing ----------------------------
 
@@ -5616,7 +5656,7 @@ class DashboardWindow(QWidget):
             )
             self.push_resident_row_to_device(row, device_id, "auto_send_after_pair")
             self.refresh_devices()
-            self.show_info("Paired", f"{row['full_name']} paired to {device_id}.")
+            self.show_info("Paired", f"{row['full_name']} paired to {device_id}.\n\nDisplay update started in the background.")
         except Exception as e:
             self.show_error("Pair failed", str(e))
         finally:
@@ -5625,60 +5665,111 @@ class DashboardWindow(QWidget):
     def push_resident_row_to_device(self, row, device_id, action_type):
         if not self.gateway_online:
             return
-        payload = {
-            "id": device_id,
-            "name": row.get("full_name") or "",
-            "room": row.get("room") or "",
-            "note": row.get("note") or "",
-            "drinks": row.get("drinks") or "",
-        }
-        if row.get("diet"):
-            payload["diet"] = [x.strip() for x in row.get("diet").split(",") if x.strip()]
-        texture = row.get("texture") or row.get("allergies")
-        fluids = row.get("fluids") or row.get("schedule")
-        if texture:
-            payload["texture"] = [x.strip() for x in texture.split(",") if x.strip()]
-            payload["allergies"] = [x.strip() for x in texture.split(",") if x.strip()]
-        if fluids:
-            payload["fluids"] = fluids
-            payload["schedule"] = fluids
-        success, message, response = self.send_resident_display_sequence(
+        payload = self.build_gateway_payload_from_row(row, device_id)
+        self.queue_resident_display_sequence(
             row,
             device_id,
             payload,
             "Latest resident text/photo pushed after pairing",
             "Auto-push",
             image_path=row.get("lcd_image_path"),
-        )
-        self.db.log_update(
-            action_type,
-            row.get("id"),
-            row.get("resident_uid"),
-            device_id,
-            self.current_user.get("id"),
-            self.current_user.get("username"),
-            payload,
-            response,
-            success,
-            message
+            action_type=action_type,
+            notify_on_failure=True,
         )
 
-    def send_resident_display_sequence(self, row, device_id, payload, success_message, label, image_path=None):
+    def queue_resident_display_sequence(
+        self,
+        row,
+        device_id,
+        payload,
+        success_message,
+        label,
+        image_path=None,
+        action_type="auto_send",
+        notify_on_failure=False,
+    ):
+        task = {
+            "row": dict(row or {}),
+            "device_id": device_id,
+            "payload": dict(payload or {}),
+            "success_message": success_message,
+            "label": label,
+            "image_path": image_path,
+            "action_type": action_type,
+            "notify_on_failure": notify_on_failure,
+            "user_id": self.current_user.get("id"),
+            "username": self.current_user.get("username"),
+            "server_mode": self.server_mode,
+            "base_url": self.base_url(),
+        }
+        threading.Thread(target=self._resident_display_worker, args=(task,), daemon=True).start()
+
+    def _resident_display_worker(self, task):
         try:
-            if self.server_mode and hasattr(self.gateway, "send_resident_display") and row and row.get("id"):
-                result = self.gateway.send_resident_display(self.base_url(), row.get("id"), device_id)
+            gateway = ServerGatewayClient() if task.get("server_mode") else GatewayClient()
+            success, message, response = self.send_resident_display_sequence(
+                task.get("row"),
+                task.get("device_id"),
+                task.get("payload"),
+                task.get("success_message"),
+                task.get("label"),
+                image_path=task.get("image_path"),
+                gateway=gateway,
+                base_url=task.get("base_url"),
+            )
+            task.update({"success": success, "message": message, "response": response})
+        except Exception as exc:
+            task.update({
+                "success": False,
+                "message": f"{task.get('label') or 'Display update'} could not finish. {friendly_error_message(str(exc))}",
+                "response": {"error": str(exc)},
+            })
+        self.resident_display_finished.emit(task)
+
+    def on_resident_display_finished(self, task):
+        row = task.get("row") or {}
+        payload = task.get("payload") or {}
+        self.db.log_update(
+            task.get("action_type") or "auto_send",
+            row.get("id") or self.selected_resident_id,
+            row.get("resident_uid") or self.current_resident_uid(),
+            task.get("device_id"),
+            task.get("user_id"),
+            task.get("username"),
+            payload,
+            task.get("response"),
+            bool(task.get("success")),
+            task.get("message") or "",
+        )
+        self.load_recent_logs()
+        self.refresh_devices()
+        if task.get("notify_on_failure") and not task.get("success"):
+            self.show_error("Display update", task.get("message") or "The resident was saved, but the display update failed.")
+
+    def send_resident_display_sequence(self, row, device_id, payload, success_message, label, image_path=None, gateway=None, base_url=None):
+        try:
+            gateway = gateway or self.gateway
+            target_base_url = base_url if base_url is not None else self.base_url()
+            if self.server_mode and hasattr(gateway, "send_resident_display") and row and row.get("id"):
+                result = gateway.send_resident_display(target_base_url, row.get("id"), device_id)
                 success = result["status_code"] == 200
                 message = success_message if success else self.result_error_message(result, f"{label} failed.")
+                body = result.get("body") or {}
+                if success and isinstance(body, dict):
+                    image = body.get("image") or {}
+                    if isinstance(image, dict) and image.get("ok") is False:
+                        detail = image.get("message") or image.get("detail") or "Resident photo could not be sent."
+                        message = f"{success_message}; {friendly_error_message(str(detail))}"
                 return success, message, result["body"]
 
-            text_result = self.gateway.send_text(self.base_url(), payload)
+            text_result = gateway.send_text(target_base_url, payload)
             text_success = text_result["status_code"] == 200
             response = {"text": text_result["body"]}
             success = text_success
             message = success_message if text_success else self.result_error_message(text_result, f"{label} text failed.")
 
             if text_success and image_path and os.path.isfile(str(image_path)):
-                image_result = self.gateway.send_image(self.base_url(), device_id, str(image_path))
+                image_result = gateway.send_image(target_base_url, device_id, str(image_path))
                 response["image"] = image_result["body"]
                 image_success = image_result["status_code"] == 200
                 success = image_success
