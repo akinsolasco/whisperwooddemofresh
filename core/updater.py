@@ -1,4 +1,6 @@
 import requests
+import subprocess
+import sys
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -191,3 +193,32 @@ class UpdaterService:
                 "path": None,
                 "message": f"Download failed: {e}",
             }
+
+    def install_update_silently(self, installer_path: str) -> Dict:
+        path = Path(installer_path or "")
+        if not path.exists():
+            return {"success": False, "message": "Downloaded installer was not found."}
+
+        launcher = self.download_dir / "silent_update_launcher.bat"
+        app_path = Path(sys.executable)
+        installer = str(path)
+        restart_line = f'start "" "{app_path}"' if app_path.suffix.lower() == ".exe" else "rem Source/dev run detected; installer will finish without app restart."
+        launcher.write_text(
+            "\n".join([
+                "@echo off",
+                "timeout /t 2 /nobreak >nul",
+                f'start "" /wait "{installer}" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS',
+                restart_line,
+                'del "%~f0"',
+                "",
+            ]),
+            encoding="utf-8",
+        )
+        try:
+            flags = 0
+            if hasattr(subprocess, "CREATE_NO_WINDOW"):
+                flags = subprocess.CREATE_NO_WINDOW
+            subprocess.Popen(["cmd", "/c", str(launcher)], creationflags=flags)
+            return {"success": True, "message": "Silent update started."}
+        except Exception as exc:
+            return {"success": False, "message": f"Could not start silent update: {exc}"}

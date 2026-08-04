@@ -5,6 +5,7 @@
 #include <LittleFS.h>
 #include <Wire.h>
 #include "esp_heap_caps.h"
+#include <Update.h>
 #include <LovyanGFX.hpp>
 
 #include "BatteryTelemetry.h"
@@ -19,7 +20,7 @@ static const char* DEFAULT_WIFI_SSID = "EPD-GATEWAY";
 static const char* DEFAULT_WIFI_PASS = "epaper123";
 static const char* DEFAULT_PI_HOST = "192.168.4.1";
 static const uint16_t DEFAULT_PI_PORT = 5000;
-static const uint8_t FIRMWARE_VERSION = 17;
+static const uint8_t FIRMWARE_VERSION = 18;
 static const uint32_t WIFI_RETRY_MS = 15000;
 static const uint32_t WIFI_CONNECT_GRACE_MS = 20000;
 static const uint32_t PI_RETRY_MS = 3000;
@@ -40,6 +41,7 @@ static unsigned long gLastPiAttemptMs = 0;
 static wl_status_t gLastWifiStatus = WL_IDLE_STATUS;
 static bool gPiSessionOnline = false;
 static bool gBatteryGaugeReady = false;
+static void handleSerialProvisioning();
 
 // ================= VERIFIED SMART LABEL PIN MAP =================
 // Shared SPI bus: LCD and e-paper use the same SCLK/MOSI. Only one CS is active at a time.
@@ -102,6 +104,7 @@ LGFX tft;
 #define LCD_IMAGE_PATH "/lcd_image.rgb565"
 #define LCD_IMAGE_TMP_PATH "/lcd_image.tmp"
 #define LCD_FILE_CHUNK_BYTES 1024
+#define OTA_CHUNK_BYTES 2048
 
 uint16_t* lcdImageBuf = nullptr;
 static bool lcdPowerOn = true;
@@ -1343,6 +1346,118 @@ static void handleImageLine(const char* line) {
   Serial.printf("[ACKIMG] sent seq=%ld\n", seq);
 }
 
+static bool receiveOtaFirmware(size_t size, const char* md5, char* err, size_t errLen) {
+  if (size == 0) {
+    snprintf(err, errLen, "size");
+    return false;
+  }
+  size_t freeSketch = ESP.getFreeSketchSpace();
+  if (freeSketch > 0 && size > freeSketch) {
+    snprintf(err, errLen, "too_large");
+    discardExactBytes(size, 120000);
+    return false;
+  }
+  if (!Update.begin(size)) {
+    snprintf(err, errLen, "begin_%u", Update.getError());
+    discardExactBytes(size, 120000);
+    return false;
+  }
+  if (md5 && md5[0]) {
+    Update.setMD5(md5);
+  }
+
+  uint8_t buf[OTA_CHUNK_BYTES];
+  size_t received = 0;
+  unsigned long lastByteMs = millis();
+  while (received < size) {
+    handleSerialProvisioning();
+    if (!client.connected()) {
+      snprintf(err, errLen, "disconnect");
+      Update.abort();
+      return false;
+    }
+    int avail = client.available();
+    if (avail <= 0) {
+      if (millis() - lastByteMs > 120000) {
+        snprintf(err, errLen, "timeout");
+        Update.abort();
+        return false;
+      }
+      delay(5);
+      continue;
+    }
+    size_t want = size - received;
+    if (want > sizeof(buf)) want = sizeof(buf);
+    if (want > (size_t)avail) want = (size_t)avail;
+    int n = client.read(buf, want);
+    if (n <= 0) {
+      delay(5);
+      continue;
+    }
+    lastByteMs = millis();
+    size_t written = Update.write(buf, (size_t)n);
+    if (written != (size_t)n) {
+      snprintf(err, errLen, "write_%u", Update.getError());
+      Update.abort();
+      discardExactBytes(size - received - (size_t)n, 120000);
+      return false;
+    }
+    received += (size_t)n;
+    if ((received % (64 * 1024)) < sizeof(buf)) {
+      Serial.printf("[OTA] received %u/%u\n", (unsigned)received, (unsigned)size);
+    }
+  }
+
+  if (!Update.end(true)) {
+    snprintf(err, errLen, "end_%u", Update.getError());
+    return false;
+  }
+  if (!Update.isFinished()) {
+    snprintf(err, errLen, "not_finished");
+    return false;
+  }
+  return true;
+}
+
+static void handleOtaLine(const char* line) {
+  char seqBuf[16];
+  char sizeBuf[24];
+  char md5Buf[40] = {0};
+  char versionBuf[40] = {0};
+
+  if (!getTokenValue(line, "seq", seqBuf, sizeof(seqBuf)) || !getTokenValue(line, "size", sizeBuf, sizeof(sizeBuf))) {
+    sendRawToPi("ACKOTA seq=0 ok=0 err=parse\n");
+    return;
+  }
+  getTokenValue(line, "md5", md5Buf, sizeof(md5Buf));
+  getTokenValue(line, "version", versionBuf, sizeof(versionBuf));
+  decodeUnderscore(versionBuf);
+
+  long seq = atol(seqBuf);
+  long sizeLong = atol(sizeBuf);
+  if (seq <= 0 || sizeLong <= 0) {
+    sendRawToPi("ACKOTA seq=0 ok=0 err=parse\n");
+    return;
+  }
+
+  Serial.printf("[OTA] start seq=%ld size=%ld version=%s\n", seq, sizeLong, versionBuf);
+  char err[32] = {0};
+  bool ok = receiveOtaFirmware((size_t)sizeLong, md5Buf, err, sizeof(err));
+  char ack[128];
+  if (ok) {
+    snprintf(ack, sizeof(ack), "ACKOTA seq=%ld ok=1 version=%s size=%ld\n", seq, versionBuf, sizeLong);
+    sendRawToPi(ack);
+    Serial.printf("[ACKOTA] sent seq=%ld; rebooting\n", seq);
+    Serial.flush();
+    delay(1200);
+    ESP.restart();
+  } else {
+    snprintf(ack, sizeof(ack), "ACKOTA seq=%ld ok=0 err=%s\n", seq, err[0] ? err : "update");
+    sendRawToPi(ack);
+    Serial.printf("[ACKOTA] failed seq=%ld err=%s\n", seq, err);
+  }
+}
+
 static void handleLcdLine(const char* line) {
   char seqBuf[16];
   char cmdBuf[24];
@@ -1802,6 +1917,10 @@ static void pollPiMessages() {
       char line[128];
       s.toCharArray(line, sizeof(line));
       handleImageLine(line);
+    } else if (s.startsWith("OTA ")) {
+      char line[160];
+      s.toCharArray(line, sizeof(line));
+      handleOtaLine(line);
     } else if (s.startsWith("LCD ")) {
       char line[128];
       s.toCharArray(line, sizeof(line));

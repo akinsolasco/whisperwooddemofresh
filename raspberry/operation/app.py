@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import io
+import hashlib
 import json
 import os
 import socket
@@ -26,12 +27,13 @@ LCD_BYTES = LCD_W * LCD_H * 2
 ONLINE_TIMEOUT_S = int(os.getenv("WHISPERWOOD_ONLINE_TIMEOUT_S", "30"))
 HEARTBEAT_INTERVAL_S = int(os.getenv("WHISPERWOOD_HEARTBEAT_INTERVAL_S", "5"))
 ACK_TIMEOUT_S = int(os.getenv("WHISPERWOOD_ACK_TIMEOUT_S", "90"))
+FIRMWARE_ACK_TIMEOUT_S = int(os.getenv("WHISPERWOOD_FIRMWARE_ACK_TIMEOUT_S", "360"))
 IMAGE_RESYNC_COOLDOWN_S = int(os.getenv("WHISPERWOOD_IMAGE_RESYNC_COOLDOWN_S", "60"))
 
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(IMAGE_CACHE_DIR, exist_ok=True)
 
-app = FastAPI(title="Whisperwood Operation Manager", version="0.3.6")
+app = FastAPI(title="Whisperwood Operation Manager", version="0.3.7")
 
 
 def utc_now() -> str:
@@ -210,6 +212,7 @@ class ConnState:
     pending_seq: Optional[int] = None
     pending_img_seq: Optional[int] = None
     pending_lcd_seq: Optional[int] = None
+    pending_ota_seq: Optional[int] = None
     battery_level: Optional[int] = None
     battery_ok: Optional[bool] = None
     battery_mv: Optional[int] = None
@@ -331,6 +334,7 @@ def close_conn(st: ConnState, reason: str = "") -> None:
         st.pending_seq = None
         st.pending_img_seq = None
         st.pending_lcd_seq = None
+        st.pending_ota_seq = None
         if st in CONNS:
             CONNS.remove(st)
         for event in st.ack_events.values():
@@ -393,6 +397,17 @@ def handle_line(st: ConnState, line: str) -> None:
         if seq:
             st.pending_lcd_seq = None
             record_ack(st, "lcd", seq, line)
+        return
+
+    if line.startswith("ACKOTA"):
+        kv = parse_kv_line(line)
+        try:
+            seq = int(kv.get("seq", "0"))
+        except ValueError:
+            seq = 0
+        if seq:
+            st.pending_ota_seq = None
+            record_ack(st, "ota", seq, line)
         return
 
     if line.startswith("ACK"):
@@ -608,6 +623,7 @@ def device_to_json(st: ConnState) -> Dict[str, Any]:
         "pending_seq": st.pending_seq,
         "pending_img_seq": st.pending_img_seq,
         "pending_lcd_seq": st.pending_lcd_seq,
+        "pending_ota_seq": st.pending_ota_seq,
         "last_seen_s": age,
         "last_seen": age,
         "last_seen_at": datetime.utcfromtimestamp(st.last_seen).isoformat(),
@@ -635,6 +651,7 @@ def device_to_json(st: ConnState) -> Dict[str, Any]:
         "uptime_ms": st.uptime_ms,
         "lcd_image_cached": st.lcd_image_cached,
         "epaper_busy": bool(st.epaper_busy or st.pending_seq is not None),
+        "ota_busy": bool(st.pending_ota_seq is not None),
         "pi_cached_image": bool(st.device_id and has_cached_device_image(st.device_id)),
         "wifi": st.wifi,
         "reported_ip": st.ip,
@@ -852,6 +869,88 @@ def send_lcd_to_target(device_id: str, command: str) -> Dict[str, Any]:
     return {"ok": True, "target": target, "sent": [send_lcd_to_device(target, command)], "errors": []}
 
 
+def send_firmware_frame(st: ConnState, header: str, firmware: bytes) -> None:
+    if not header.endswith("\n"):
+        header += "\n"
+    with st.send_lock:
+        st.sock.settimeout(120.0)
+        for chunk in (header.encode("utf-8"), firmware):
+            total = 0
+            while total < len(chunk):
+                sent = st.sock.send(chunk[total:])
+                if sent <= 0:
+                    raise ConnectionError("socket send returned 0")
+                total += sent
+        st.sock.settimeout(1.0)
+
+
+def send_firmware_to_device(device_id: str, firmware: bytes, version: str = "", filename: str = "") -> Dict[str, Any]:
+    if not device_id:
+        raise HTTPException(status_code=400, detail="missing device_id")
+    if not firmware:
+        raise HTTPException(status_code=400, detail="firmware file is empty")
+    st = get_device_state(device_id)
+    if st.pending_seq is not None or st.epaper_busy:
+        raise HTTPException(status_code=409, detail="E-paper is updating; wait before OTA firmware update.")
+    if st.pending_img_seq is not None:
+        raise HTTPException(status_code=409, detail="LCD photo is updating; wait before OTA firmware update.")
+    if st.pending_lcd_seq is not None:
+        raise HTTPException(status_code=409, detail="LCD command is pending; wait before OTA firmware update.")
+    if st.pending_ota_seq is not None:
+        raise HTTPException(status_code=409, detail=f"OTA firmware update already pending: pending_ota_seq={st.pending_ota_seq}")
+
+    seq = next_seq()
+    md5 = hashlib.md5(firmware).hexdigest()
+    sha256 = hashlib.sha256(firmware).hexdigest()
+    safe_version = enc_spaces(version or "")
+    safe_name = enc_spaces(filename or "firmware.bin")
+    header = f"OTA seq={seq} size={len(firmware)} md5={md5} version={safe_version} filename={safe_name}"
+    event = create_ack(st, "ota", seq)
+    try:
+        st.pending_ota_seq = seq
+        send_firmware_frame(st, header, firmware)
+        print(f"[{wall_time()}] TXOTA -> {device_id}: seq={seq} size={len(firmware)} version={version}", flush=True)
+    except Exception as exc:
+        st.pending_ota_seq = None
+        close_conn(st, f"OTA send failed {exc}")
+        raise HTTPException(status_code=500, detail=f"OTA send failed: {exc}") from exc
+
+    acked = event.wait(FIRMWARE_ACK_TIMEOUT_S)
+    result = pop_ack_result(st, "ota", seq, timed_out=not acked)
+    with LOCK:
+        if st.pending_ota_seq == seq:
+            st.pending_ota_seq = None
+    if not result.get("ok"):
+        raise HTTPException(status_code=504 if result.get("timeout") else 502, detail=result)
+    return {
+        "ok": True,
+        "seq": seq,
+        "ack": result,
+        "device_id": device_id,
+        "version": version or "",
+        "filename": filename or "",
+        "size": len(firmware),
+        "md5": md5,
+        "sha256": sha256,
+    }
+
+
+def send_firmware_to_target(device_id: str, firmware: bytes, version: str = "", filename: str = "") -> Dict[str, Any]:
+    target = str(device_id or "all")
+    if target.lower() == "all":
+        with LOCK:
+            ids = [dev_id for dev_id, st in DEVICES.items() if st.online]
+        results = []
+        errors = []
+        for dev_id in ids:
+            try:
+                results.append(send_firmware_to_device(dev_id, firmware, version, filename))
+            except HTTPException as exc:
+                errors.append({"device_id": dev_id, "detail": exc.detail, "status_code": exc.status_code})
+        return {"ok": bool(results) and not errors, "target": "all", "sent": results, "errors": errors}
+    return {"ok": True, "target": target, "sent": [send_firmware_to_device(target, firmware, version, filename)], "errors": []}
+
+
 @app.get("/health")
 def health() -> Dict[str, Any]:
     start_background_threads()
@@ -860,7 +959,7 @@ def health() -> Dict[str, Any]:
     return {
         "ok": True,
         "service": "operation",
-        "version": "0.3.6",
+        "version": "0.3.7",
         "time": utc_now(),
         "tcp_host": HOST,
         "tcp_port": TCP_PORT,
@@ -899,6 +998,19 @@ def lcd(body: Optional[Dict[str, Any]] = Body(default=None)) -> Dict[str, Any]:
 def schedule(body: Optional[Dict[str, Any]] = Body(default=None)) -> Dict[str, Any]:
     state = save_schedule_state(body or {})
     return {"ok": True, "schedule": state, "message": "Global LCD schedule saved in Operation Manager"}
+
+
+@app.post("/firmware/ota")
+async def firmware_ota(
+    device_id: str = Form(default="all"),
+    version: str = Form(default=""),
+    firmware: UploadFile = File(...),
+) -> Dict[str, Any]:
+    raw = await firmware.read()
+    filename = firmware.filename or "firmware.bin"
+    if not filename.lower().endswith(".bin"):
+        raise HTTPException(status_code=400, detail="Firmware upload must be a compiled ESP32 .bin file")
+    return send_firmware_to_target(device_id.strip() or "all", raw, version.strip(), filename)
 
 
 @app.get("/schedules")

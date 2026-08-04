@@ -7,9 +7,11 @@ from typing import Optional, Any
 from sqlalchemy import create_engine, text
 from argon2 import PasswordHasher
 from argon2.exceptions import VerifyMismatchError
-import os, json, platform, subprocess, shutil, psutil, requests, secrets, string, time
+from email.message import EmailMessage
+from pathlib import Path
+import hashlib, os, json, platform, subprocess, shutil, psutil, requests, secrets, smtplib, string, tarfile, tempfile, time
 
-app = FastAPI(title="Whisperwood Control Service", version="0.5.2")
+app = FastAPI(title="Whisperwood Control Service", version="0.6.1")
 STARTED_AT = datetime.utcnow()
 
 app.add_middleware(
@@ -28,8 +30,23 @@ ph = PasswordHasher()
 
 DOC_DIR = "/opt/whisperwood/data/documents"
 IMG_DIR = "/opt/whisperwood/data/images"
+DATA_DIR = "/opt/whisperwood/data"
+BACKUP_DIR = "/opt/whisperwood/data/backups"
+FIRMWARE_DIR = "/opt/whisperwood/data/firmware"
 os.makedirs(DOC_DIR, exist_ok=True)
 os.makedirs(IMG_DIR, exist_ok=True)
+os.makedirs(BACKUP_DIR, exist_ok=True)
+os.makedirs(FIRMWARE_DIR, exist_ok=True)
+
+GDRIVE_BACKUP_TARGET = os.getenv("GDRIVE_BACKUP_TARGET", "").strip()
+SMTP_HOST = os.getenv("WHISPERWOOD_SMTP_HOST", "").strip()
+SMTP_PORT = int(os.getenv("WHISPERWOOD_SMTP_PORT", "587") or "587")
+SMTP_USERNAME = os.getenv("WHISPERWOOD_SMTP_USERNAME", "").strip()
+SMTP_PASSWORD = os.getenv("WHISPERWOOD_SMTP_PASSWORD", "")
+SMTP_FROM_EMAIL = os.getenv("WHISPERWOOD_SMTP_FROM_EMAIL", SMTP_USERNAME).strip()
+SMTP_FROM_NAME = os.getenv("WHISPERWOOD_SMTP_FROM_NAME", "Enhanced Living Whisperwood").strip()
+SMTP_USE_SSL = os.getenv("WHISPERWOOD_SMTP_SSL", "0").strip().lower() in {"1", "true", "yes", "on"}
+SMTP_USE_TLS = os.getenv("WHISPERWOOD_SMTP_TLS", "1").strip().lower() in {"1", "true", "yes", "on"}
 
 BATTERY_ROLE_DEFAULTS = ["IT_ADMIN"]
 DEFAULT_BATTERY_ALERT_SETTINGS = {
@@ -38,6 +55,10 @@ DEFAULT_BATTERY_ALERT_SETTINGS = {
     "critical_threshold": 10,
     "popup_cooldown_minutes": 30,
     "recipient_roles": BATTERY_ROLE_DEFAULTS,
+    "email_enabled": False,
+    "recipient_emails": [],
+    "email_cooldown_minutes": 60,
+    "email_subject_prefix": "Whisperwood Battery Alert",
 }
 
 def now():
@@ -200,6 +221,22 @@ def normalize_battery_alert_settings(raw: Any = None) -> dict[str, Any]:
             normalized.append(key)
     data["recipient_roles"] = normalized or list(BATTERY_ROLE_DEFAULTS)
     data["enabled"] = bool(data.get("enabled", True))
+    emails = data.get("recipient_emails") or []
+    if isinstance(emails, str):
+        emails = [part.strip() for part in emails.replace(";", ",").split(",")]
+    clean_emails = []
+    for email in emails or []:
+        value = str(email or "").strip()
+        marker = value.lower()
+        if value and "@" in value and marker not in [existing.lower() for existing in clean_emails]:
+            clean_emails.append(value)
+    data["recipient_emails"] = clean_emails
+    data["email_enabled"] = bool(data.get("email_enabled", False))
+    try:
+        data["email_cooldown_minutes"] = max(5, min(1440, int(data.get("email_cooldown_minutes", 60))))
+    except Exception:
+        data["email_cooldown_minutes"] = 60
+    data["email_subject_prefix"] = str(data.get("email_subject_prefix") or "Whisperwood Battery Alert").strip()[:120]
     return data
 
 
@@ -221,6 +258,248 @@ def save_system_setting(key: str, value: Any) -> None:
         ON CONFLICT (key)
         DO UPDATE SET value_json=EXCLUDED.value_json, updated_at=EXCLUDED.updated_at
     """, {"key": key, "value_json": payload, "updated_at": now()})
+
+
+def smtp_configured() -> bool:
+    return bool(SMTP_HOST and SMTP_FROM_EMAIL and (SMTP_USERNAME or not SMTP_PASSWORD))
+
+
+def send_email_message(subject: str, body: str, recipients: list[str]) -> dict[str, Any]:
+    recipients = [str(email or "").strip() for email in recipients or [] if str(email or "").strip()]
+    if not recipients:
+        return {"ok": False, "skipped": True, "reason": "No email recipients configured"}
+    if not smtp_configured():
+        return {"ok": False, "skipped": True, "reason": "SMTP is not configured on the Raspberry Pi"}
+
+    msg = EmailMessage()
+    msg["Subject"] = subject
+    msg["From"] = f"{SMTP_FROM_NAME} <{SMTP_FROM_EMAIL}>"
+    msg["To"] = ", ".join(recipients)
+    msg.set_content(body)
+
+    try:
+        if SMTP_USE_SSL:
+            with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=20) as server:
+                if SMTP_USERNAME:
+                    server.login(SMTP_USERNAME, SMTP_PASSWORD)
+                server.send_message(msg)
+        else:
+            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
+                if SMTP_USE_TLS:
+                    server.starttls()
+                if SMTP_USERNAME:
+                    server.login(SMTP_USERNAME, SMTP_PASSWORD)
+                server.send_message(msg)
+        return {"ok": True, "recipients": recipients}
+    except Exception as exc:
+        return {"ok": False, "error": str(exc), "recipients": recipients}
+
+
+def device_battery_level(device: dict[str, Any], settings: dict[str, Any]) -> Optional[str]:
+    try:
+        percent = int(device.get("battery_level"))
+    except Exception:
+        percent = None
+    low_flag = bool(device.get("battery_low"))
+    if percent is None and not low_flag:
+        return None
+    if percent is not None and percent <= int(settings.get("critical_threshold", 10)):
+        return "critical"
+    if low_flag or (percent is not None and percent <= int(settings.get("low_threshold", 20))):
+        return "low"
+    return None
+
+
+def process_battery_email_alerts(devices: list[dict[str, Any]]) -> dict[str, Any]:
+    settings = normalize_battery_alert_settings(get_system_setting("battery_alert_settings", DEFAULT_BATTERY_ALERT_SETTINGS))
+    if not settings.get("enabled") or not settings.get("email_enabled"):
+        return {"ok": True, "skipped": True, "reason": "Battery email alerts disabled"}
+    recipients = settings.get("recipient_emails") or []
+    if not recipients:
+        return {"ok": True, "skipped": True, "reason": "No battery alert email recipients"}
+
+    state = get_system_setting("battery_email_alert_state", {})
+    if not isinstance(state, dict):
+        state = {}
+    cooldown_s = int(settings.get("email_cooldown_minutes", 60)) * 60
+    now_ts = time.time()
+    due = []
+    for device in devices:
+        if not device.get("is_online"):
+            continue
+        level = device_battery_level(device, settings)
+        if not level:
+            continue
+        device_id = str(device.get("device_id") or device.get("id") or "unknown")
+        key = f"{device_id}:{level}"
+        try:
+            last_sent = float(state.get(key, 0))
+        except Exception:
+            last_sent = 0
+        if now_ts - last_sent < cooldown_s:
+            continue
+        state[key] = now_ts
+        due.append({
+            "level": level,
+            "device_id": device_id,
+            "resident": device.get("resident_name") or device.get("paired_resident_name") or "Unassigned",
+            "battery": device.get("battery_level"),
+            "voltage": device.get("battery_voltage"),
+            "power": "Charging" if device.get("battery_charging") else "Plugged in" if device.get("battery_plugged") else "On battery",
+            "last_seen_s": device.get("last_seen_s"),
+        })
+
+    if not due:
+        save_system_setting("battery_email_alert_state", state)
+        return {"ok": True, "skipped": True, "reason": "No battery alerts due"}
+
+    critical = any(item["level"] == "critical" for item in due)
+    subject_prefix = settings.get("email_subject_prefix") or "Whisperwood Battery Alert"
+    subject = f"{subject_prefix}: {'Critical' if critical else 'Low'} smart label battery"
+    lines = [
+        "Enhanced Living Whisperwood battery alert",
+        "",
+        "One or more smart resident display labels need battery attention.",
+        "",
+    ]
+    for item in due:
+        lines.append(
+            f"- {item['device_id']} | {item['resident']} | {str(item['level']).upper()} | "
+            f"{item['battery']}% | {item['power']} | last seen {item['last_seen_s']}s ago"
+        )
+    lines.extend([
+        "",
+        "Please check the listed display label(s), charger connection, and battery status from the IT Control Center.",
+        "",
+        f"Generated by {platform.node()} at {now()} UTC.",
+    ])
+    result = send_email_message(subject, "\n".join(lines), recipients)
+    save_system_setting("battery_email_alert_state", state)
+    log_action("system", "battery_email_alert", "devices", "success" if result.get("ok") else "skipped", result.get("error") or result.get("reason") or "Battery alert email processed", payload={"due": due}, response=result)
+    return {**result, "alerts": due}
+
+
+def pg_connection_url() -> str:
+    return DATABASE_URL.replace("postgresql+psycopg2://", "postgresql://")
+
+
+def backup_file_info(path: Path) -> dict[str, Any]:
+    stat = path.stat()
+    return {
+        "name": path.name,
+        "path": str(path),
+        "size_bytes": stat.st_size,
+        "created_at": datetime.utcfromtimestamp(stat.st_mtime).isoformat(),
+        "type": "local",
+        "status": "available",
+    }
+
+
+def list_local_backups() -> list[dict[str, Any]]:
+    root = Path(BACKUP_DIR)
+    rows = [backup_file_info(path) for path in root.glob("*.tar.gz") if path.is_file()]
+    rows.sort(key=lambda row: row.get("created_at") or "", reverse=True)
+    return rows
+
+
+def run_backup_upload(path: Path) -> dict[str, Any]:
+    if not GDRIVE_BACKUP_TARGET:
+        return {"ok": True, "skipped": True, "reason": "Google Drive backup target is not configured"}
+    if not shutil.which("rclone"):
+        return {"ok": False, "skipped": True, "reason": "rclone is not installed on the Raspberry Pi"}
+    result = subprocess.run(
+        ["rclone", "copy", str(path), GDRIVE_BACKUP_TARGET],
+        text=True,
+        capture_output=True,
+        timeout=600,
+    )
+    return {
+        "ok": result.returncode == 0,
+        "target": GDRIVE_BACKUP_TARGET,
+        "stdout": result.stdout[-2000:],
+        "stderr": result.stderr[-2000:],
+    }
+
+
+def create_backup_archive(created_by: str = "system", upload_to_drive: bool = True) -> dict[str, Any]:
+    timestamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    archive_path = Path(BACKUP_DIR) / f"whisperwood-demo-backup-{timestamp}.tar.gz"
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        metadata = {
+            "created_at": now(),
+            "created_by": created_by or "system",
+            "hostname": platform.node(),
+            "control_version": "0.6.1",
+            "database_url_configured": bool(DATABASE_URL),
+        }
+        (tmp_path / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
+
+        dump_path = tmp_path / "control_database.dump"
+        pg_dump = shutil.which("pg_dump")
+        if pg_dump and DATABASE_URL:
+            result = subprocess.run(
+                [pg_dump, "-Fc", "-f", str(dump_path), pg_connection_url()],
+                text=True,
+                capture_output=True,
+                timeout=600,
+            )
+            if result.returncode != 0:
+                (tmp_path / "pg_dump_error.txt").write_text(result.stderr or result.stdout or "pg_dump failed", encoding="utf-8")
+        else:
+            (tmp_path / "pg_dump_error.txt").write_text("pg_dump or DATABASE_URL is not configured", encoding="utf-8")
+
+        with tarfile.open(archive_path, "w:gz") as tar:
+            tar.add(tmp_path / "metadata.json", arcname="metadata.json")
+            if dump_path.exists():
+                tar.add(dump_path, arcname="control_database.dump")
+            error_file = tmp_path / "pg_dump_error.txt"
+            if error_file.exists():
+                tar.add(error_file, arcname="pg_dump_error.txt")
+            for folder_name in ("documents", "images"):
+                folder = Path(DATA_DIR) / folder_name
+                if folder.exists():
+                    tar.add(folder, arcname=f"data/{folder_name}")
+            schedule_file = Path(DATA_DIR) / "lcd_schedule.json"
+            if schedule_file.exists():
+                tar.add(schedule_file, arcname="data/lcd_schedule.json")
+
+    upload = run_backup_upload(archive_path) if upload_to_drive else {"ok": True, "skipped": True, "reason": "Drive upload disabled for this backup"}
+    info = backup_file_info(archive_path)
+    info["upload"] = upload
+    log_action(created_by or "system", "backup_create", archive_path.name, "success" if upload.get("ok") else "warning", upload.get("reason") or "Backup created", payload={"upload_to_drive": upload_to_drive}, response=info)
+    return {"ok": True, "backup": info}
+
+
+def restore_backup_archive(path_text: str, confirm_text: str, restored_by: str = "system") -> dict[str, Any]:
+    if confirm_text != "RESTORE WHISPERWOOD BACKUP":
+        raise HTTPException(status_code=400, detail="Restore confirmation text did not match")
+    archive_path = Path(path_text or "")
+    if not archive_path.is_file() or archive_path.parent != Path(BACKUP_DIR):
+        raise HTTPException(status_code=404, detail="Backup file was not found in the local backup folder")
+    pre_restore = create_backup_archive(f"{restored_by or 'system'} pre-restore", upload_to_drive=False)
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp_path = Path(tmp)
+        with tarfile.open(archive_path, "r:gz") as tar:
+            tar.extractall(tmp_path)
+        dump_path = tmp_path / "control_database.dump"
+        pg_restore = shutil.which("pg_restore")
+        if dump_path.exists() and pg_restore and DATABASE_URL:
+            result = subprocess.run(
+                [pg_restore, "--clean", "--if-exists", "--no-owner", "--dbname", pg_connection_url(), str(dump_path)],
+                text=True,
+                capture_output=True,
+                timeout=900,
+            )
+            if result.returncode != 0:
+                raise HTTPException(status_code=500, detail=f"Database restore failed: {result.stderr or result.stdout}")
+        for folder_name in ("documents", "images"):
+            src = tmp_path / "data" / folder_name
+            dst = Path(DATA_DIR) / folder_name
+            if src.exists():
+                shutil.copytree(src, dst, dirs_exist_ok=True)
+    log_action(restored_by or "system", "backup_restore", archive_path.name, "success", "Backup restored", payload={"path": str(archive_path)}, response={"pre_restore_backup": pre_restore.get("backup")})
+    return {"ok": True, "restored": str(archive_path), "pre_restore_backup": pre_restore.get("backup")}
 
 
 def resident_display_payload(row, device_id=""):
@@ -639,6 +918,26 @@ def init_db():
     );
     """)
 
+    db_exec("""
+    CREATE TABLE IF NOT EXISTS firmware_releases (
+        id SERIAL PRIMARY KEY,
+        version TEXT NOT NULL,
+        filename TEXT NOT NULL,
+        path TEXT NOT NULL,
+        size_bytes INTEGER,
+        sha256 TEXT,
+        md5 TEXT,
+        notes TEXT,
+        status TEXT DEFAULT 'uploaded',
+        uploaded_by TEXT,
+        released_by TEXT,
+        target TEXT,
+        last_result JSONB,
+        created_at TEXT,
+        released_at TEXT
+    );
+    """)
+
     if not db_one("SELECT * FROM users WHERE username='admin'"):
         db_exec("""
             INSERT INTO users(username,password_hash,role,full_name,is_active,force_password_change,created_at)
@@ -789,6 +1088,30 @@ class BatteryAlertSettingsPayload(BaseModel):
     critical_threshold: int = 10
     popup_cooldown_minutes: int = 30
     recipient_roles: list[str] = Field(default_factory=lambda: ["IT_ADMIN"])
+    email_enabled: bool = False
+    recipient_emails: list[str] = Field(default_factory=list)
+    email_cooldown_minutes: int = 60
+    email_subject_prefix: str = "Whisperwood Battery Alert"
+
+
+class BatteryTestEmailPayload(BaseModel):
+    recipients: list[str] = Field(default_factory=list)
+
+
+class FirmwareReleasePayload(BaseModel):
+    device_id: str = "all"
+    released_by: Optional[str] = "system"
+
+
+class BackupCreatePayload(BaseModel):
+    created_by: Optional[str] = "system"
+    upload_to_drive: bool = True
+
+
+class BackupRestorePayload(BaseModel):
+    path: str
+    confirm_text: str
+    restored_by: Optional[str] = "system"
 
 
 def resident_sql_values(payload: ResidentPayload, resident_id: int | None = None):
@@ -812,7 +1135,7 @@ def health():
     return {
         "ok": True,
         "service": "control",
-        "version": "0.5.2",
+        "version": "0.6.1",
         "hostname": platform.node(),
         "time": now(),
         "uptime": f"{uptime_s}s",
@@ -992,7 +1315,12 @@ def get_image(resident_id: int, x_whisperwood_key: str | None = Header(default=N
 @app.get("/devices")
 def devices(x_whisperwood_key: str | None = Header(default=None)):
     require_key(x_whisperwood_key)
-    return {"ok": True, "devices": merged_devices()}
+    rows = merged_devices()
+    try:
+        process_battery_email_alerts(rows)
+    except Exception as exc:
+        log_action("system", "battery_email_alert", "devices", "warning", f"Battery email alert check failed: {exc}")
+    return {"ok": True, "devices": rows}
 
 @app.post("/devices")
 def upsert_device(payload: DevicePayload, x_whisperwood_key: str | None = Header(default=None)):
@@ -1390,7 +1718,7 @@ def save_dropdown_options_alias(payload: DropdownOptionsPayload, x_whisperwood_k
 def battery_alert_settings(x_whisperwood_key: str | None = Header(default=None)):
     require_key(x_whisperwood_key)
     settings = normalize_battery_alert_settings(get_system_setting("battery_alert_settings", DEFAULT_BATTERY_ALERT_SETTINGS))
-    return {"ok": True, "settings": settings}
+    return {"ok": True, "settings": settings, "email_configured": smtp_configured()}
 
 
 @app.post("/battery-alert-settings")
@@ -1408,7 +1736,23 @@ def save_battery_alert_settings(payload: BatteryAlertSettingsPayload, x_whisperw
         payload=settings,
         response={"ok": True},
     )
-    return {"ok": True, "settings": settings}
+    return {"ok": True, "settings": settings, "email_configured": smtp_configured()}
+
+
+@app.post("/battery-alert-settings/test-email")
+def battery_alert_test_email(payload: BatteryTestEmailPayload, x_whisperwood_key: str | None = Header(default=None)):
+    require_key(x_whisperwood_key)
+    settings = normalize_battery_alert_settings(get_system_setting("battery_alert_settings", DEFAULT_BATTERY_ALERT_SETTINGS))
+    recipients = payload.recipients or settings.get("recipient_emails") or []
+    result = send_email_message(
+        f"{settings.get('email_subject_prefix') or 'Whisperwood Battery Alert'}: Test email",
+        "This is a test battery notification from Enhanced Living Whisperwood.\n\nIf you received this, Raspberry Pi email alerts are configured.",
+        recipients,
+    )
+    log_action("system", "battery_test_email", "devices", "success" if result.get("ok") else "failed", result.get("error") or result.get("reason") or "Battery test email sent", payload={"recipients": recipients}, response=result)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result)
+    return result
 
 @app.get("/system")
 def system_status(x_whisperwood_key: str | None = Header(default=None)):
@@ -1544,12 +1888,123 @@ def operation_resident_display(payload: Optional[dict] = Body(default=None), x_w
     )
     return result
 
+
+@app.get("/firmware/releases")
+def firmware_releases(x_whisperwood_key: str | None = Header(default=None)):
+    require_key(x_whisperwood_key)
+    rows = db_all("""
+        SELECT id, version, filename, path, size_bytes, sha256, md5, notes, status,
+               uploaded_by, released_by, target, last_result, created_at, released_at
+        FROM firmware_releases
+        ORDER BY id DESC
+    """)
+    return {"ok": True, "releases": rows}
+
+
+@app.post("/firmware/upload")
+async def firmware_upload(
+    firmware: UploadFile = File(...),
+    version: str = Form(default=""),
+    notes: str = Form(default=""),
+    uploaded_by: str = Form(default="system"),
+    x_whisperwood_key: str | None = Header(default=None),
+):
+    require_key(x_whisperwood_key)
+    filename = (firmware.filename or "firmware.bin").replace("/", "_").replace("\\", "_")
+    if not filename.lower().endswith(".bin"):
+        raise HTTPException(status_code=400, detail="Upload the compiled ESP32 firmware .bin file")
+    raw = await firmware.read()
+    if not raw:
+        raise HTTPException(status_code=400, detail="Firmware file is empty")
+    version_text = (version or Path(filename).stem).strip()
+    stamp = datetime.utcnow().strftime("%Y%m%d-%H%M%S")
+    safe_name = f"{stamp}_{filename}"
+    path = Path(FIRMWARE_DIR) / safe_name
+    path.write_bytes(raw)
+    sha256 = hashlib.sha256(raw).hexdigest()
+    md5 = hashlib.md5(raw).hexdigest()
+    row = db_one("""
+        INSERT INTO firmware_releases(version, filename, path, size_bytes, sha256, md5, notes, status, uploaded_by, created_at)
+        VALUES(:version, :filename, :path, :size_bytes, :sha256, :md5, :notes, 'uploaded', :uploaded_by, :created_at)
+        RETURNING *
+    """, {
+        "version": version_text,
+        "filename": filename,
+        "path": str(path),
+        "size_bytes": len(raw),
+        "sha256": sha256,
+        "md5": md5,
+        "notes": notes or "",
+        "uploaded_by": uploaded_by or "system",
+        "created_at": now(),
+    })
+    log_action(uploaded_by or "system", "firmware_upload", version_text, "success", "ESP32 firmware uploaded", payload={"filename": filename, "size": len(raw)}, response=row)
+    return {"ok": True, "release": row}
+
+
+@app.post("/firmware/releases/{release_id}/release")
+def firmware_release(release_id: int, payload: FirmwareReleasePayload, x_whisperwood_key: str | None = Header(default=None)):
+    require_key(x_whisperwood_key)
+    row = db_one("SELECT * FROM firmware_releases WHERE id=:id", {"id": release_id})
+    if not row:
+        raise HTTPException(status_code=404, detail="Firmware release not found")
+    path = row.get("path") or ""
+    if not path or not os.path.exists(path):
+        raise HTTPException(status_code=404, detail="Firmware .bin file is missing from the Raspberry Pi")
+    with open(path, "rb") as fh:
+        raw = fh.read()
+    files = {"firmware": (row.get("filename") or "firmware.bin", raw, "application/octet-stream")}
+    data = {"device_id": payload.device_id or "all", "version": row.get("version") or ""}
+    result = operation_request("POST", "/firmware/ota", files=files, data=data, timeout=600)
+    db_exec("""
+        UPDATE firmware_releases
+        SET status=:status, released_by=:released_by, target=:target, last_result=:last_result, released_at=:released_at
+        WHERE id=:id
+    """, {
+        "status": "released" if result.get("ok") else "failed",
+        "released_by": payload.released_by or "system",
+        "target": payload.device_id or "all",
+        "last_result": json_value(result),
+        "released_at": now(),
+        "id": release_id,
+    })
+    log_action(payload.released_by or "system", "firmware_release", row.get("version") or str(release_id), "success" if result.get("ok") else "failed", "ESP32 OTA firmware release sent", payload=payload.dict(), response=result)
+    if not result.get("ok"):
+        raise HTTPException(status_code=502, detail=result)
+    return {"ok": True, "result": result}
+
+
+@app.get("/backups")
+def backups(x_whisperwood_key: str | None = Header(default=None)):
+    require_key(x_whisperwood_key)
+    return {
+        "ok": True,
+        "backups": list_local_backups(),
+        "google_drive": {
+            "configured": bool(GDRIVE_BACKUP_TARGET),
+            "target": GDRIVE_BACKUP_TARGET,
+            "rclone_available": bool(shutil.which("rclone")),
+        },
+    }
+
+
+@app.post("/backups")
+def create_backup(payload: BackupCreatePayload, x_whisperwood_key: str | None = Header(default=None)):
+    require_key(x_whisperwood_key)
+    return create_backup_archive(payload.created_by or "system", upload_to_drive=payload.upload_to_drive)
+
+
+@app.post("/backups/restore")
+def restore_backup(payload: BackupRestorePayload, x_whisperwood_key: str | None = Header(default=None)):
+    require_key(x_whisperwood_key)
+    return restore_backup_archive(payload.path, payload.confirm_text, payload.restored_by or "system")
+
 @app.get("/bootstrap/info")
 def bootstrap_info(x_whisperwood_key: str | None = Header(default=None)):
     require_key(x_whisperwood_key)
     return {
         "ok": True,
-        "version": "0.5.2",
+        "version": "0.6.1",
         "database_user": "whisperwood_app",
         "default_users": [
             {"username": "admin", "password": "admin123", "role": "admin"},

@@ -172,6 +172,10 @@ class DashboardWindow(QWidget):
             "critical_threshold": 10,
             "popup_cooldown_minutes": 30,
             "recipient_roles": ["IT_ADMIN"],
+            "email_enabled": False,
+            "recipient_emails": [],
+            "email_cooldown_minutes": 60,
+            "email_subject_prefix": "Whisperwood Battery Alert",
         }
 
     def normalize_battery_alert_settings(self, raw: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -200,6 +204,24 @@ class DashboardWindow(QWidget):
                 normalized_roles.append(key)
         settings["recipient_roles"] = normalized_roles or ["IT_ADMIN"]
         settings["enabled"] = bool(settings.get("enabled", True))
+        emails = settings.get("recipient_emails") or []
+        if isinstance(emails, str):
+            emails = [part.strip() for part in emails.replace(";", ",").split(",")]
+        seen_emails = set()
+        clean_emails = []
+        for email in emails or []:
+            value = str(email or "").strip()
+            marker = value.lower()
+            if value and "@" in value and marker not in seen_emails:
+                seen_emails.add(marker)
+                clean_emails.append(value)
+        settings["recipient_emails"] = clean_emails
+        settings["email_enabled"] = bool(settings.get("email_enabled", False))
+        try:
+            settings["email_cooldown_minutes"] = max(5, min(1440, int(settings.get("email_cooldown_minutes", 60))))
+        except Exception:
+            settings["email_cooldown_minutes"] = 60
+        settings["email_subject_prefix"] = str(settings.get("email_subject_prefix") or "Whisperwood Battery Alert").strip()
         return settings
 
     def role_allows_battery_popup(self) -> bool:
@@ -1886,6 +1908,11 @@ class DashboardWindow(QWidget):
         elif index == 2:
             self.load_battery_alert_settings(timeout=3.0)
             self.load_control_devices()
+        elif index == 3:
+            self.load_control_devices()
+            self.load_ota_releases()
+        elif index == 4:
+            self.load_control_backups()
         elif index == 5:
             self.load_it_audit_logs()
 
@@ -2168,7 +2195,7 @@ class DashboardWindow(QWidget):
         self.it_device_table.setStyleSheet(self.table_style())
 
         battery_panel = QFrame(page)
-        battery_panel.setGeometry(0, 475, 955, 138)
+        battery_panel.setGeometry(0, 475, 955, 238)
         self.apply_frame_style(battery_panel, self.card_style())
 
         battery_title = QLabel("Battery Alert Policy", battery_panel)
@@ -2225,17 +2252,44 @@ class DashboardWindow(QWidget):
         ]:
             checkbox.setStyleSheet(self.checkbox_style())
 
+        self.chk_battery_email_enabled = QCheckBox("Send email alerts", battery_panel)
+        self.chk_battery_email_enabled.setGeometry(22, 114, 160, 26)
+        self.chk_battery_email_enabled.setStyleSheet(self.checkbox_style())
+
+        email_label = QLabel("Email recipients", battery_panel)
+        email_label.setGeometry(178, 112, 140, 18)
+        email_label.setStyleSheet(self.label_style())
+        self.txt_battery_emails = QLineEdit(battery_panel)
+        self.txt_battery_emails.setGeometry(178, 136, 410, 38)
+        self.txt_battery_emails.setPlaceholderText("it@example.com, manager@example.com")
+        self.txt_battery_emails.setStyleSheet(self.input_style())
+
+        email_cooldown_label = QLabel("Email cooldown", battery_panel)
+        email_cooldown_label.setGeometry(606, 112, 120, 18)
+        email_cooldown_label.setStyleSheet(self.label_style())
+        self.spin_battery_email_cooldown = QSpinBox(battery_panel)
+        self.spin_battery_email_cooldown.setGeometry(606, 136, 122, 38)
+        self.spin_battery_email_cooldown.setRange(5, 1440)
+        self.spin_battery_email_cooldown.setSuffix(" min")
+        self.spin_battery_email_cooldown.setStyleSheet(self.input_style())
+
+        self.btn_test_battery_email = QPushButton("Test Email", battery_panel)
+        self.btn_test_battery_email.setGeometry(746, 136, 112, 38)
+        self.btn_test_battery_email.setStyleSheet(self.secondary_btn_style())
+        self.btn_test_battery_email.clicked.connect(self.send_battery_test_email)
+
         self.btn_save_battery_alerts = QPushButton("Save Policy", battery_panel)
         self.btn_save_battery_alerts.setGeometry(808, 18, 124, 38)
         self.btn_save_battery_alerts.setStyleSheet(self.primary_btn_style())
         self.btn_save_battery_alerts.clicked.connect(self.save_battery_alert_settings_from_ui)
 
         self.battery_alert_status = QLabel("Battery popups use the latest ESP32 status sent through the Raspberry Pi.", battery_panel)
-        self.battery_alert_status.setGeometry(22, 108, 900, 20)
+        self.battery_alert_status.setGeometry(22, 192, 900, 28)
+        self.battery_alert_status.setWordWrap(True)
         self.battery_alert_status.setStyleSheet("font-size: 12px; color: #64748b; font-weight: 700;")
 
         wifi_panel = QFrame(page)
-        wifi_panel.setGeometry(0, 635, 955, 250)
+        wifi_panel.setGeometry(0, 735, 955, 250)
         self.apply_frame_style(wifi_panel, self.card_style())
 
         wifi_title = QLabel("ESP32 WiFi Provisioning", wifi_panel)
@@ -2311,30 +2365,71 @@ class DashboardWindow(QWidget):
         title = QLabel("OTA", page)
         title.setGeometry(0, 0, 260, 28)
         title.setStyleSheet("font-size: 20px; font-weight: 800; color: #0f172a;")
-        message = QLabel("OTA Framework Reserved For Future ESP32 Firmware Updates", page)
-        message.setGeometry(0, 48, 620, 24)
+        message = QLabel("Upload a compiled ESP32 .bin, then release it to one connected device or all online devices.", page)
+        message.setGeometry(0, 48, 780, 24)
         message.setStyleSheet("font-size: 13px; color: #475569; font-weight: 700;")
 
-        upload = QPushButton("Upload Firmware", page)
-        upload.setGeometry(0, 92, 170, 44)
-        upload.setStyleSheet(self.secondary_btn_style())
-        upload.setEnabled(False)
-        upload.setToolTip("Available after backend implementation.")
+        file_label = QLabel("Firmware .bin", page)
+        file_label.setGeometry(0, 88, 120, 18)
+        file_label.setStyleSheet(self.label_style())
+        self.ota_firmware_path = QLineEdit(page)
+        self.ota_firmware_path.setGeometry(0, 112, 430, 40)
+        self.ota_firmware_path.setReadOnly(True)
+        self.ota_firmware_path.setPlaceholderText("Choose compiled ESP32 firmware .bin")
+        self.ota_firmware_path.setStyleSheet(self.input_style())
 
-        release = QPushButton("Release Firmware", page)
-        release.setGeometry(190, 92, 170, 44)
-        release.setStyleSheet(self.secondary_btn_style())
-        release.setEnabled(False)
-        release.setToolTip("Available after backend implementation.")
+        self.btn_choose_ota_firmware = QPushButton("Choose", page)
+        self.btn_choose_ota_firmware.setGeometry(445, 112, 105, 40)
+        self.btn_choose_ota_firmware.setStyleSheet(self.secondary_btn_style())
+        self.btn_choose_ota_firmware.clicked.connect(self.choose_ota_firmware)
 
-        table = QTableWidget(page)
-        table.setGeometry(0, 165, 955, 430)
-        table.setColumnCount(4)
-        table.setHorizontalHeaderLabels(["Version", "Target", "Released By", "Status"])
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        table.verticalHeader().setVisible(False)
-        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        table.setStyleSheet(self.table_style())
+        version_label = QLabel("Version", page)
+        version_label.setGeometry(570, 88, 100, 18)
+        version_label.setStyleSheet(self.label_style())
+        self.ota_version = QLineEdit(page)
+        self.ota_version.setGeometry(570, 112, 130, 40)
+        self.ota_version.setPlaceholderText("fw18")
+        self.ota_version.setStyleSheet(self.input_style())
+
+        self.btn_upload_ota_firmware = QPushButton("Upload Firmware", page)
+        self.btn_upload_ota_firmware.setGeometry(720, 112, 170, 40)
+        self.btn_upload_ota_firmware.setStyleSheet(self.primary_btn_style())
+        self.btn_upload_ota_firmware.clicked.connect(self.upload_ota_firmware)
+
+        notes_label = QLabel("Release notes", page)
+        notes_label.setGeometry(0, 170, 130, 18)
+        notes_label.setStyleSheet(self.label_style())
+        self.ota_notes = QTextEdit(page)
+        self.ota_notes.setGeometry(0, 194, 550, 70)
+        self.ota_notes.setPlaceholderText("What changed in this firmware...")
+        self.ota_notes.setStyleSheet(self.input_style())
+
+        target_label = QLabel("Target", page)
+        target_label.setGeometry(570, 170, 90, 18)
+        target_label.setStyleSheet(self.label_style())
+        self.ota_target = QComboBox(page)
+        self.ota_target.setGeometry(570, 194, 210, 40)
+        self.ota_target.setStyleSheet(self.input_style())
+        self.ota_target.addItem("All online ESP32 devices", "all")
+
+        self.btn_release_ota_firmware = QPushButton("Release Selected", page)
+        self.btn_release_ota_firmware.setGeometry(800, 194, 150, 40)
+        self.btn_release_ota_firmware.setStyleSheet(self.secondary_btn_style())
+        self.btn_release_ota_firmware.clicked.connect(self.release_selected_ota_firmware)
+
+        self.ota_status = QLabel("OTA requires devices running the OTA-capable firmware once by USB first.", page)
+        self.ota_status.setGeometry(570, 242, 380, 22)
+        self.ota_status.setStyleSheet("font-size: 12px; color: #64748b; font-weight: 700;")
+
+        self.ota_table = QTableWidget(page)
+        self.ota_table.setGeometry(0, 292, 955, 390)
+        self.ota_table.setColumnCount(6)
+        self.ota_table.setHorizontalHeaderLabels(["ID", "Version", "File", "Size", "Status", "Released"])
+        self.ota_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.ota_table.verticalHeader().setVisible(False)
+        self.ota_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.ota_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.ota_table.setStyleSheet(self.table_style())
         return page
 
     def build_control_backups_section(self):
@@ -2343,30 +2438,38 @@ class DashboardWindow(QWidget):
         title = QLabel("Backups", page)
         title.setGeometry(0, 0, 260, 28)
         title.setStyleSheet("font-size: 20px; font-weight: 800; color: #0f172a;")
-        message = QLabel("Backup API Pending Backend Implementation", page)
-        message.setGeometry(0, 48, 520, 24)
+        message = QLabel("Create encrypted-network-site backups locally and upload to the configured Google Drive target.", page)
+        message.setGeometry(0, 48, 760, 24)
         message.setStyleSheet("font-size: 13px; color: #475569; font-weight: 700;")
 
-        create_btn = QPushButton("Create Backup", page)
-        create_btn.setGeometry(0, 92, 170, 44)
-        create_btn.setStyleSheet(self.secondary_btn_style())
-        create_btn.setEnabled(False)
-        create_btn.setToolTip("Available after backend implementation.")
+        self.btn_create_backup = QPushButton("Create Backup Now", page)
+        self.btn_create_backup.setGeometry(0, 92, 180, 44)
+        self.btn_create_backup.setStyleSheet(self.primary_btn_style())
+        self.btn_create_backup.clicked.connect(self.create_control_backup)
 
-        restore_btn = QPushButton("Restore Backup", page)
-        restore_btn.setGeometry(190, 92, 170, 44)
-        restore_btn.setStyleSheet(self.secondary_btn_style())
-        restore_btn.setEnabled(False)
-        restore_btn.setToolTip("Available after backend implementation.")
+        self.btn_refresh_backups = QPushButton("Refresh Backups", page)
+        self.btn_refresh_backups.setGeometry(198, 92, 155, 44)
+        self.btn_refresh_backups.setStyleSheet(self.secondary_btn_style())
+        self.btn_refresh_backups.clicked.connect(self.load_control_backups)
 
-        table = QTableWidget(page)
-        table.setGeometry(0, 165, 955, 430)
-        table.setColumnCount(5)
-        table.setHorizontalHeaderLabels(["Created", "Type", "Size", "Created By", "Status"])
-        table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        table.verticalHeader().setVisible(False)
-        table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        table.setStyleSheet(self.table_style())
+        self.btn_restore_backup = QPushButton("Restore Selected", page)
+        self.btn_restore_backup.setGeometry(371, 92, 155, 44)
+        self.btn_restore_backup.setStyleSheet(self.secondary_btn_style())
+        self.btn_restore_backup.clicked.connect(self.restore_selected_backup)
+
+        self.backup_status = QLabel("Restore requires exact typed confirmation and creates a pre-restore backup first.", page)
+        self.backup_status.setGeometry(545, 102, 410, 24)
+        self.backup_status.setStyleSheet("font-size: 12px; color: #b45309; font-weight: 800;")
+
+        self.backup_table = QTableWidget(page)
+        self.backup_table.setGeometry(0, 165, 955, 430)
+        self.backup_table.setColumnCount(5)
+        self.backup_table.setHorizontalHeaderLabels(["Created", "Name", "Size", "Type", "Status"])
+        self.backup_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.backup_table.verticalHeader().setVisible(False)
+        self.backup_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.backup_table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.backup_table.setStyleSheet(self.table_style())
         return page
 
     def build_control_logs_section(self):
@@ -3956,6 +4059,12 @@ class DashboardWindow(QWidget):
         self.chk_battery_role_admin.setChecked("NURSE_ADMIN" in roles)
         self.chk_battery_role_staff.setChecked("NURSE" in roles)
         self.chk_battery_role_verifier.setChecked("VERIFIER" in roles)
+        if hasattr(self, "chk_battery_email_enabled"):
+            self.chk_battery_email_enabled.setChecked(bool(settings.get("email_enabled", False)))
+        if hasattr(self, "txt_battery_emails"):
+            self.txt_battery_emails.setText(", ".join(settings.get("recipient_emails") or []))
+        if hasattr(self, "spin_battery_email_cooldown"):
+            self.spin_battery_email_cooldown.setValue(int(settings.get("email_cooldown_minutes", 60)))
 
     def battery_alert_settings_from_ui(self) -> Dict[str, Any]:
         roles = []
@@ -3973,6 +4082,10 @@ class DashboardWindow(QWidget):
             "critical_threshold": self.spin_battery_critical.value(),
             "popup_cooldown_minutes": self.spin_battery_cooldown.value(),
             "recipient_roles": roles or ["IT_ADMIN"],
+            "email_enabled": self.chk_battery_email_enabled.isChecked() if hasattr(self, "chk_battery_email_enabled") else False,
+            "recipient_emails": self.txt_battery_emails.text() if hasattr(self, "txt_battery_emails") else "",
+            "email_cooldown_minutes": self.spin_battery_email_cooldown.value() if hasattr(self, "spin_battery_email_cooldown") else 60,
+            "email_subject_prefix": "Whisperwood Battery Alert",
         })
 
     def save_battery_alert_settings_from_ui(self):
@@ -3986,7 +4099,8 @@ class DashboardWindow(QWidget):
             if result.get("ok"):
                 payload = result.get("data") or {}
                 settings = self.normalize_battery_alert_settings(payload.get("settings") or settings)
-                message = "Battery alert policy saved to the Raspberry Pi."
+                email_state = " Email sender configured." if payload.get("email_configured") else " Email sender not configured on the Pi yet."
+                message = "Battery alert policy saved to the Raspberry Pi." + email_state
                 state_color = "#047857"
             else:
                 message = result.get("error") or "Battery alert policy saved locally. Connect to the Raspberry Pi to share it."
@@ -4007,6 +4121,30 @@ class DashboardWindow(QWidget):
                 )
             except Exception:
                 pass
+        finally:
+            self.end_button_busy(busy)
+
+    def send_battery_test_email(self):
+        if not self.is_it_admin():
+            self.show_error("Permission Required", "Only IT admins can send battery test emails.")
+            return
+        settings = self.battery_alert_settings_from_ui()
+        recipients = settings.get("recipient_emails") or []
+        if not recipients:
+            self.show_error("No recipients", "Enter at least one email recipient before sending a test.")
+            return
+        busy = self.begin_button_busy(getattr(self, "btn_test_battery_email", None), "Sending...")
+        try:
+            result = self.control_client(timeout=20.0).send_battery_test_email(recipients)
+            if result.get("ok"):
+                self.battery_alert_status.setText("Test email sent. Check the configured recipient inbox.")
+                self.battery_alert_status.setStyleSheet("font-size: 12px; color: #047857; font-weight: 800;")
+                self.show_info("Battery Email", "Test battery email sent successfully.")
+            else:
+                message = result.get("error") or "Battery test email failed."
+                self.battery_alert_status.setText(message)
+                self.battery_alert_status.setStyleSheet("font-size: 12px; color: #b91c1c; font-weight: 800;")
+                self.show_error("Battery Email", message)
         finally:
             self.end_button_busy(busy)
 
@@ -4135,6 +4273,12 @@ class DashboardWindow(QWidget):
             return
         if self.it_control_stack.currentIndex() == 0:
             self.refresh_control_dashboard()
+            return
+        if self.it_control_stack.currentIndex() == 3:
+            self.load_ota_releases()
+            return
+        if self.it_control_stack.currentIndex() == 4:
+            self.load_control_backups()
             return
         if hasattr(self, "control_profile_combo"):
             self.load_control_profiles()
@@ -4449,6 +4593,230 @@ class DashboardWindow(QWidget):
             profile = self.current_control_profile()
             self.esp32_pi_host.setText(profile.get("host") or "")
         self.load_it_recovery_users()
+        if hasattr(self, "ota_target"):
+            current = self.ota_target.currentData()
+            self.ota_target.blockSignals(True)
+            self.ota_target.clear()
+            self.ota_target.addItem("All online ESP32 devices", "all")
+            for device in devices:
+                if not device.get("is_online"):
+                    continue
+                device_id = device.get("device_id") or device.get("id")
+                if device_id:
+                    self.ota_target.addItem(str(device_id), str(device_id))
+            if current:
+                for idx in range(self.ota_target.count()):
+                    if self.ota_target.itemData(idx) == current:
+                        self.ota_target.setCurrentIndex(idx)
+                        break
+            self.ota_target.blockSignals(False)
+
+    def file_size_text(self, size):
+        try:
+            size = int(size or 0)
+        except Exception:
+            size = 0
+        for unit in ("B", "KB", "MB", "GB"):
+            if size < 1024 or unit == "GB":
+                return f"{size:.1f} {unit}" if unit != "B" else f"{size} B"
+            size = size / 1024
+        return str(size)
+
+    def selected_ota_release_id(self):
+        if not hasattr(self, "ota_table"):
+            return None
+        row = self.ota_table.currentRow()
+        if row < 0:
+            return None
+        item = self.ota_table.item(row, 0)
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    def choose_ota_firmware(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Choose ESP32 firmware .bin", "", "ESP32 Firmware (*.bin);;All Files (*)")
+        if not path:
+            return
+        self.ota_firmware_path.setText(path)
+        if not self.ota_version.text().strip():
+            self.ota_version.setText(os.path.splitext(os.path.basename(path))[0])
+
+    def load_ota_releases(self):
+        if not hasattr(self, "ota_table"):
+            return
+        result = self.control_client(timeout=6.0).get_firmware_releases()
+        if not result.get("ok"):
+            self.ota_status.setText(result.get("error") or "Could not load OTA releases.")
+            self.ota_status.setStyleSheet("font-size: 12px; color: #b91c1c; font-weight: 800;")
+            self.ota_table.setRowCount(0)
+            return
+        rows = (result.get("data") or {}).get("releases") or []
+        self.ota_table.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            values = [
+                row.get("id"),
+                row.get("version") or "",
+                row.get("filename") or "",
+                self.file_size_text(row.get("size_bytes")),
+                row.get("status") or "",
+                self.db.format_timestamp(row.get("released_at")),
+            ]
+            for c, value in enumerate(values):
+                item = QTableWidgetItem(str(value or ""))
+                if c == 0:
+                    item.setData(Qt.ItemDataRole.UserRole, row.get("id"))
+                self.ota_table.setItem(r, c, item)
+        self.ota_status.setText(f"{len(rows)} firmware release(s) available.")
+        self.ota_status.setStyleSheet("font-size: 12px; color: #047857; font-weight: 800;")
+
+    def upload_ota_firmware(self):
+        if not self.is_it_admin():
+            self.show_error("Permission Required", "Only IT admins can upload ESP32 firmware.")
+            return
+        path = self.ota_firmware_path.text().strip()
+        if not path or not os.path.isfile(path):
+            self.show_error("Firmware Missing", "Choose a compiled ESP32 .bin file first.")
+            return
+        busy = self.begin_button_busy(getattr(self, "btn_upload_ota_firmware", None), "Uploading...")
+        try:
+            result = self.control_client(timeout=60.0).upload_firmware(
+                path,
+                self.ota_version.text().strip(),
+                self.ota_notes.toPlainText().strip(),
+                self.current_user.get("username") or "itadmin",
+            )
+            if result.get("ok"):
+                self.ota_status.setText("Firmware uploaded to the Raspberry Pi. Select it below, then release when ready.")
+                self.ota_status.setStyleSheet("font-size: 12px; color: #047857; font-weight: 800;")
+                self.load_ota_releases()
+                self.load_it_audit_logs()
+            else:
+                self.show_error("Firmware Upload", result.get("error") or "Firmware upload failed.")
+        finally:
+            self.end_button_busy(busy)
+
+    def release_selected_ota_firmware(self):
+        if not self.is_it_admin():
+            self.show_error("Permission Required", "Only IT admins can release ESP32 firmware.")
+            return
+        release_id = self.selected_ota_release_id()
+        if not release_id:
+            self.show_error("No firmware selected", "Select a firmware release row first.")
+            return
+        target = self.ota_target.currentData() or "all"
+        target_text = "all online ESP32 devices" if target == "all" else str(target)
+        reply = QMessageBox.question(
+            self,
+            "Release Firmware",
+            f"Release the selected firmware to {target_text}?\n\nDo this only when devices are powered and idle.",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+        busy = self.begin_button_busy(getattr(self, "btn_release_ota_firmware", None), "Releasing...")
+        try:
+            result = self.control_client(timeout=620.0).release_firmware(
+                int(release_id),
+                target,
+                self.current_user.get("username") or "itadmin",
+            )
+            if result.get("ok"):
+                self.ota_status.setText("OTA release sent. Devices will reboot when firmware is applied.")
+                self.ota_status.setStyleSheet("font-size: 12px; color: #047857; font-weight: 800;")
+                self.load_ota_releases()
+                self.refresh_devices()
+            else:
+                self.show_error("OTA Release", result.get("error") or "OTA release failed.")
+        finally:
+            self.end_button_busy(busy)
+
+    def selected_backup_path(self):
+        if not hasattr(self, "backup_table"):
+            return None
+        row = self.backup_table.currentRow()
+        if row < 0:
+            return None
+        item = self.backup_table.item(row, 1)
+        return item.data(Qt.ItemDataRole.UserRole) if item else None
+
+    def load_control_backups(self):
+        if not hasattr(self, "backup_table"):
+            return
+        result = self.control_client(timeout=8.0).get_backups()
+        if not result.get("ok"):
+            self.backup_status.setText(result.get("error") or "Could not load backups.")
+            self.backup_status.setStyleSheet("font-size: 12px; color: #b91c1c; font-weight: 800;")
+            self.backup_table.setRowCount(0)
+            return
+        data = result.get("data") or {}
+        rows = data.get("backups") or []
+        drive = data.get("google_drive") or {}
+        self.backup_table.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            values = [
+                self.db.format_timestamp(row.get("created_at")),
+                row.get("name") or "",
+                self.file_size_text(row.get("size_bytes")),
+                row.get("type") or "local",
+                row.get("status") or "",
+            ]
+            for c, value in enumerate(values):
+                item = QTableWidgetItem(str(value or ""))
+                if c == 1:
+                    item.setData(Qt.ItemDataRole.UserRole, row.get("path"))
+                self.backup_table.setItem(r, c, item)
+        drive_text = "Google Drive ready" if drive.get("configured") and drive.get("rclone_available") else "Google Drive not configured yet"
+        self.backup_status.setText(f"{len(rows)} local backup(s). {drive_text}.")
+        self.backup_status.setStyleSheet("font-size: 12px; color: #047857; font-weight: 800;" if rows else "font-size: 12px; color: #b45309; font-weight: 800;")
+
+    def create_control_backup(self):
+        if not self.is_it_admin():
+            self.show_error("Permission Required", "Only IT admins can create backups.")
+            return
+        busy = self.begin_button_busy(getattr(self, "btn_create_backup", None), "Creating...")
+        try:
+            result = self.control_client(timeout=620.0).create_backup(self.current_user.get("username") or "itadmin", True)
+            if result.get("ok"):
+                data = result.get("data") or {}
+                upload = (data.get("backup") or {}).get("upload") or {}
+                message = upload.get("reason") or "Backup created and Google Drive upload attempted."
+                self.backup_status.setText(message)
+                self.backup_status.setStyleSheet("font-size: 12px; color: #047857; font-weight: 800;")
+                self.load_control_backups()
+            else:
+                self.show_error("Backup", result.get("error") or "Backup failed.")
+        finally:
+            self.end_button_busy(busy)
+
+    def restore_selected_backup(self):
+        if not self.is_it_admin():
+            self.show_error("Permission Required", "Only IT admins can restore backups.")
+            return
+        path = self.selected_backup_path()
+        if not path:
+            self.show_error("No backup selected", "Select a backup row first.")
+            return
+        confirm, ok = QInputDialog.getText(
+            self,
+            "Confirm Restore",
+            "Type RESTORE WHISPERWOOD BACKUP to restore this backup.\nA pre-restore backup will be created first.",
+        )
+        if not ok:
+            return
+        busy = self.begin_button_busy(getattr(self, "btn_restore_backup", None), "Restoring...")
+        try:
+            result = self.control_client(timeout=940.0).restore_backup(
+                path,
+                confirm,
+                self.current_user.get("username") or "itadmin",
+            )
+            if result.get("ok"):
+                self.backup_status.setText("Backup restored. Refresh the app data before continuing.")
+                self.backup_status.setStyleSheet("font-size: 12px; color: #047857; font-weight: 800;")
+                self.load_control_backups()
+                self.refresh_all()
+            else:
+                self.show_error("Restore", result.get("error") or "Restore failed.")
+        finally:
+            self.end_button_busy(busy)
 
     def refresh_esp32_serial_ports(self):
         if not hasattr(self, "esp32_serial_port"):

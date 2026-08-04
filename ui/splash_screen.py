@@ -1,4 +1,3 @@
-import subprocess
 from PyQt6 import QtCore, QtGui, QtWidgets
 
 from config import APP_NAME, APP_VERSION, ASSETS_DIR
@@ -215,20 +214,20 @@ class SplashScreen(QtWidgets.QWidget):
             self.boot_log.setText(download["message"])
             return
 
-        self.boot_log.setText("Update downloaded successfully")
+        self.boot_log.setText("Update downloaded. Installing silently...")
         QtWidgets.QApplication.processEvents()
 
-        reply = QtWidgets.QMessageBox.question(
-            self,
-            "Update Available",
-            f"A new version (v{result['latest_version']}) has been downloaded.\n\n"
-            "Install it now before continuing to login?",
-            QtWidgets.QMessageBox.StandardButton.Yes | QtWidgets.QMessageBox.StandardButton.No
-        )
-
-        if reply == QtWidgets.QMessageBox.StandardButton.Yes:
-            subprocess.Popen([download["path"]], shell=True)
+        install = self.updater.install_update_silently(download["path"])
+        if install.get("success"):
+            self.subtitle.setText(f"Updating to v{result['latest_version']}")
+            self.loading_label.setText("Installing update...")
+            self.boot_log.setText("The app will reopen after the update finishes.")
+            self.progress.setValue(96)
+            self.percent.setText("96%")
+            QtWidgets.QApplication.processEvents()
             QtWidgets.QApplication.quit()
+        else:
+            self.boot_log.setText(install.get("message") or "Update install could not start")
 
     def finish(self):
         self.finished.emit()

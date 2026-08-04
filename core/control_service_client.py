@@ -378,6 +378,44 @@ class ControlServiceClient:
             "device_id": device_id,
         })
 
+    def get_firmware_releases(self) -> Dict[str, Any]:
+        return self._request("GET", "/firmware/releases")
+
+    def upload_firmware(self, firmware_path: str, version: str = "", notes: str = "", uploaded_by: str = "") -> Dict[str, Any]:
+        if not firmware_path or not os.path.isfile(firmware_path):
+            return self._result(False, "/firmware/upload", error="Firmware .bin file was not found.")
+        with open(firmware_path, "rb") as fh:
+            files = {"firmware": (os.path.basename(firmware_path), fh, "application/octet-stream")}
+            data = {"version": version, "notes": notes, "uploaded_by": uploaded_by}
+            return self._request("POST", "/firmware/upload", files=files, data=data)
+
+    def release_firmware(self, release_id: int, device_id: str = "all", released_by: str = "") -> Dict[str, Any]:
+        return self._request("POST", f"/firmware/releases/{release_id}/release", {
+            "device_id": device_id or "all",
+            "released_by": released_by,
+        })
+
+    def get_backups(self) -> Dict[str, Any]:
+        return self._request("GET", "/backups")
+
+    def create_backup(self, created_by: str = "system", upload_to_drive: bool = True) -> Dict[str, Any]:
+        return self._request("POST", "/backups", {
+            "created_by": created_by or "system",
+            "upload_to_drive": bool(upload_to_drive),
+        })
+
+    def restore_backup(self, path: str, confirm_text: str, restored_by: str = "system") -> Dict[str, Any]:
+        return self._request("POST", "/backups/restore", {
+            "path": path,
+            "confirm_text": confirm_text,
+            "restored_by": restored_by or "system",
+        })
+
+    def send_battery_test_email(self, recipients: Optional[list[str]] = None) -> Dict[str, Any]:
+        return self._request("POST", "/battery-alert-settings/test-email", {
+            "recipients": recipients or [],
+        })
+
     def bootstrap_info(self) -> Dict[str, Any]:
         return self._request("GET", "/bootstrap/info")
 
@@ -392,20 +430,8 @@ class ControlServiceClient:
     def logs(self) -> Dict[str, Any]:
         return self.get_logs()
 
-    def create_backup(self) -> Dict[str, Any]:
-        return self.pending("create_backup")
-
-    def restore_backup(self) -> Dict[str, Any]:
-        return self.pending("restore_backup")
-
     def ota_status(self) -> Dict[str, Any]:
-        return self.pending("ota_status")
-
-    def upload_firmware(self) -> Dict[str, Any]:
-        return self.pending("upload_firmware")
-
-    def release_firmware(self) -> Dict[str, Any]:
-        return self.pending("release_firmware")
+        return self.get_firmware_releases()
 
     def ai_debug_summary(self) -> Dict[str, Any]:
         return self.pending("ai_debug_summary")
