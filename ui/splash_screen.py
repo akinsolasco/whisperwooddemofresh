@@ -52,6 +52,16 @@ class UpdateWorker(QtCore.QObject):
                 self.finished.emit({"action": "continue", "message": "Updater not enabled"})
                 return
 
+            if result.get("installing"):
+                version = result.get("target_version") or result.get("latest_version") or "latest"
+                self.status.emit(f"Finishing v{version} update...")
+                self.finished.emit({
+                    "action": "handoff",
+                    "version": version,
+                    "message": result.get("message") or "Update is already installing.",
+                })
+                return
+
             if not result.get("has_update"):
                 self.finished.emit({"action": "continue", "message": result.get("message") or "Application is up to date"})
                 return
@@ -66,9 +76,9 @@ class UpdateWorker(QtCore.QObject):
                 return
 
             self.status.emit("Installing update...")
-            install = self.updater.install_update_silently(download.get("path"))
+            install = self.updater.install_update_silently(download.get("path"), version)
             if install.get("success"):
-                self.finished.emit({"action": "quit", "version": version})
+                self.finished.emit({"action": "handoff", "version": version})
             else:
                 self.finished.emit({"action": "continue", "message": install.get("message") or "Update install could not start"})
         except Exception as exc:
@@ -263,14 +273,15 @@ class SplashScreen(QtWidgets.QWidget):
             self.loading_base_text = "Checking"
 
     def handle_update_finished(self, result: dict):
-        if result.get("action") == "quit":
+        if result.get("action") in {"quit", "handoff"}:
             self.subtitle.setText(f"Updating to v{result.get('version') or 'latest'}")
             self.loading_base_text = "Installing update"
-            self.boot_log.setText("The app will reopen after the update finishes.")
+            self.boot_log.setText("A small update window will stay open while the installer finishes.")
             self.progress_value = max(self.progress_value, 96)
+            self.progress.setRange(0, 0)
             self.progress.setValue(self.progress_value)
-            self.percent.setText(f"{self.progress_value}%")
-            QtWidgets.QApplication.quit()
+            self.percent.setText("...")
+            QtCore.QTimer.singleShot(1800, QtWidgets.QApplication.quit)
             return
 
         self.update_in_progress = False

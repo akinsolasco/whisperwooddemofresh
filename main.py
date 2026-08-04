@@ -9,6 +9,8 @@ from ui.splash_screen import SplashScreen
 from ui.login_window import LoginWindow
 from ui.dashboard_window import DashboardWindow
 
+_APP_MUTEX_HANDLE = None
+
 
 def configure_windows_identity():
     if sys.platform != "win32":
@@ -19,6 +21,19 @@ def configure_windows_identity():
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(app_id)
     except Exception:
         pass
+
+
+def acquire_single_instance_lock():
+    global _APP_MUTEX_HANDLE
+    if sys.platform != "win32":
+        return True
+    try:
+        import ctypes
+        mutex_name = "Local\\EnhancedLivingWhisperwoodDemo"
+        _APP_MUTEX_HANDLE = ctypes.windll.kernel32.CreateMutexW(None, False, mutex_name)
+        return ctypes.windll.kernel32.GetLastError() != 183
+    except Exception:
+        return True
 
 
 def configure_app_icon(app: QApplication):
@@ -81,6 +96,8 @@ class AppController:
 
 
 def main():
+    if not acquire_single_instance_lock():
+        return
     configure_windows_identity()
     app = QApplication(sys.argv)
     app.setApplicationName(APP_NAME)
