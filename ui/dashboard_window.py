@@ -5285,17 +5285,22 @@ class DashboardWindow(QWidget):
         dialog = QDialog(self)
         dialog.setWindowTitle("Change Password")
         dialog.resize(460, 300)
-        dialog.setStyleSheet("QDialog { background-color: #f3f7fb; color: #0f172a; }")
+        dialog.setStyleSheet("""
+            QDialog { background-color: #f3f7fb; color: #0f172a; }
+            QDialog QLabel { background: transparent; border: none; }
+        """)
         layout = QVBoxLayout(dialog)
 
         title = QLabel("Change your password", dialog)
-        title.setStyleSheet("font-size: 18px; font-weight: 800; color: #0f172a;")
+        title.setFrameStyle(0)
+        title.setStyleSheet("font-size: 18px; font-weight: 800; color: #0f172a; background: transparent; border: none;")
         layout.addWidget(title)
 
         guidance_text = "You signed in with a temporary password. Create a new password before continuing." if force else "Update the password for your signed-in account."
         guidance = QLabel(guidance_text, dialog)
         guidance.setWordWrap(True)
-        guidance.setStyleSheet("font-size: 12px; color: #64748b;")
+        guidance.setFrameStyle(0)
+        guidance.setStyleSheet("font-size: 12px; color: #64748b; background: transparent; border: none;")
         layout.addWidget(guidance)
 
         current_password = QLineEdit(dialog)
@@ -5318,15 +5323,19 @@ class DashboardWindow(QWidget):
 
         status = QLabel("", dialog)
         status.setWordWrap(True)
-        status.setStyleSheet("font-size: 12px; color: #b91c1c;")
+        status.setFrameStyle(0)
+        status.setStyleSheet("font-size: 12px; color: #b91c1c; background: transparent; border: none;")
         layout.addWidget(status)
 
         buttons = QHBoxLayout()
+        buttons.addStretch(1)
         save_btn = QPushButton("Save Password", dialog)
         save_btn.setStyleSheet(self.primary_btn_style())
+        save_btn.setFixedSize(150, 40)
         buttons.addWidget(save_btn)
         cancel_btn = QPushButton("Logout" if force else "Cancel", dialog)
         cancel_btn.setStyleSheet(self.secondary_btn_style())
+        cancel_btn.setFixedSize(110, 40)
         buttons.addWidget(cancel_btn)
         layout.addLayout(buttons)
 
@@ -5362,11 +5371,15 @@ class DashboardWindow(QWidget):
         dialog = QDialog(self)
         dialog.setWindowTitle("Profile")
         dialog.resize(520, 360)
-        dialog.setStyleSheet("QDialog { background-color: #f3f7fb; color: #0f172a; }")
+        dialog.setStyleSheet("""
+            QDialog { background-color: #f3f7fb; color: #0f172a; }
+            QDialog QLabel { background: transparent; border: none; }
+        """)
         layout = QVBoxLayout(dialog)
 
         title = QLabel("Profile", dialog)
-        title.setStyleSheet("font-size: 18px; font-weight: 800; color: #0f172a;")
+        title.setFrameStyle(0)
+        title.setStyleSheet("font-size: 18px; font-weight: 800; color: #0f172a; background: transparent; border: none;")
         layout.addWidget(title)
 
         guidance = QLabel(
@@ -5374,7 +5387,8 @@ class DashboardWindow(QWidget):
             dialog,
         )
         guidance.setWordWrap(True)
-        guidance.setStyleSheet("font-size: 12px; color: #64748b;")
+        guidance.setFrameStyle(0)
+        guidance.setStyleSheet("font-size: 12px; color: #64748b; background: transparent; border: none;")
         layout.addWidget(guidance)
 
         username_edit = QLineEdit(dialog)
@@ -5385,19 +5399,24 @@ class DashboardWindow(QWidget):
         layout.addWidget(username_edit)
 
         role_label = QLabel(f"Role: {self.role_label()}", dialog)
-        role_label.setStyleSheet("font-size: 13px; color: #334155;")
+        role_label.setFrameStyle(0)
+        role_label.setStyleSheet("font-size: 13px; color: #334155; background: transparent; border: none;")
         layout.addWidget(role_label)
 
         username_note = QLabel("Username editing is disabled until backend username-change support is available.", dialog)
         username_note.setWordWrap(True)
-        username_note.setStyleSheet("font-size: 12px; color: #b45309;")
+        username_note.setFrameStyle(0)
+        username_note.setStyleSheet("font-size: 12px; color: #b45309; background: transparent; border: none;")
         layout.addWidget(username_note)
 
         buttons = QHBoxLayout()
+        buttons.addStretch(1)
         change_password_btn = QPushButton("Change Password", dialog)
         change_password_btn.setStyleSheet(self.primary_btn_style())
+        change_password_btn.setFixedSize(165, 40)
         close_btn = QPushButton("Close", dialog)
         close_btn.setStyleSheet(self.secondary_btn_style())
+        close_btn.setFixedSize(100, 40)
         buttons.addWidget(change_password_btn)
         buttons.addWidget(close_btn)
         layout.addLayout(buttons)
@@ -5412,12 +5431,17 @@ class DashboardWindow(QWidget):
             return
         dialog = QDialog(self)
         dialog.setWindowTitle("Settings")
-        dialog.resize(980, 760)
-        dialog.setMinimumSize(900, 700)
+        available = QGuiApplication.primaryScreen().availableGeometry()
+        dialog.resize(min(980, max(860, available.width() - 120)), min(760, max(640, available.height() - 120)))
+        dialog.setMinimumSize(840, 640)
         dialog.setStyleSheet("""
             QDialog {
                 background-color: #f3f7fb;
                 color: #0f172a;
+            }
+            QDialog QLabel {
+                background: transparent;
+                border: none;
             }
             QTabWidget::pane {
                 border: 1px solid #d8e1ea;
@@ -5441,6 +5465,10 @@ class DashboardWindow(QWidget):
                 background-color: #0f766e;
                 color: #ffffff;
                 border-color: #0f766e;
+            }
+            QTabBar::tab:hover {
+                background-color: #dbeafe;
+                color: #0f172a;
             }
         """)
         layout = QVBoxLayout(dialog)
@@ -5528,22 +5556,35 @@ class DashboardWindow(QWidget):
                 card_layout.addWidget(sub)
             return card, card_layout
 
+        def plain_label(label, style):
+            label.setFrameStyle(0)
+            label.setStyleSheet(f"{style}; background: transparent; border: none;")
+            return label
+
+        def compact_button(button, width=176, height=40):
+            button.setFixedHeight(height)
+            button.setMinimumWidth(width)
+            button.setMaximumWidth(width)
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
+            return button
+
         def make_metric(parent, label_text, value_text):
             metric = QFrame(parent)
             metric.setStyleSheet("""
                 QFrame {
-                    background-color: #eef7f5;
-                    border: 1px solid #c7dfda;
-                    border-radius: 8px;
+                    background-color: transparent;
+                    border: none;
+                    border-left: 3px solid #0f766e;
+                    border-radius: 0px;
                 }
             """)
             metric_layout = QVBoxLayout(metric)
-            metric_layout.setContentsMargins(12, 10, 12, 10)
+            metric_layout.setContentsMargins(14, 4, 12, 4)
             label = QLabel(label_text, metric)
-            label.setStyleSheet("font-size: 11px; color: #64748b; font-weight: 900;")
+            plain_label(label, "font-size: 11px; color: #64748b; font-weight: 900")
             value = QLabel(value_text, metric)
             value.setWordWrap(True)
-            value.setStyleSheet("font-size: 15px; color: #0f172a; font-weight: 900;")
+            plain_label(value, "font-size: 15px; color: #0f172a; font-weight: 900")
             metric_layout.addWidget(label)
             metric_layout.addWidget(value)
             return metric
@@ -5551,7 +5592,7 @@ class DashboardWindow(QWidget):
         def field_with_label(parent, label_text, widget):
             box = QVBoxLayout()
             label = QLabel(label_text, parent)
-            label.setStyleSheet(self.label_style())
+            plain_label(label, "font-size: 12px; font-weight: 800; color: #334155")
             box.addWidget(label)
             box.addWidget(widget)
             return box
@@ -5573,11 +5614,15 @@ class DashboardWindow(QWidget):
             account_card,
         )
         password_text.setWordWrap(True)
-        password_text.setStyleSheet("font-size: 12px; color: #334155;")
+        plain_label(password_text, "font-size: 12px; color: #334155")
         account_card_layout.addWidget(password_text)
         change_password_btn = QPushButton("Change My Password", account_card)
         change_password_btn.setStyleSheet(self.primary_btn_style())
-        account_card_layout.addWidget(change_password_btn)
+        compact_button(change_password_btn, 210)
+        password_actions = QHBoxLayout()
+        password_actions.addWidget(change_password_btn)
+        password_actions.addStretch(1)
+        account_card_layout.addLayout(password_actions)
         account_layout.addWidget(account_card)
         account_layout.addStretch(1)
         tabs.addTab(account_tab, "Account Security")
@@ -5605,12 +5650,14 @@ class DashboardWindow(QWidget):
         status_layout.setContentsMargins(14, 12, 14, 12)
         status_text = QLabel("Select a user row, then activate or deactivate access.", status_panel)
         status_text.setWordWrap(True)
-        status_text.setStyleSheet("font-size: 12px; color: #334155;")
-        status_layout.addWidget(status_text)
+        plain_label(status_text, "font-size: 12px; color: #334155")
+        status_layout.addWidget(status_text, 1)
         activate_btn = QPushButton("Activate User", status_panel)
         activate_btn.setStyleSheet(self.secondary_btn_style())
-        deactivate_btn = QPushButton("Deactivate User", status_panel)
+        compact_button(activate_btn, 142)
+        deactivate_btn = QPushButton("Deactivate", status_panel)
         deactivate_btn.setStyleSheet(self.secondary_btn_style())
+        compact_button(deactivate_btn, 142)
         status_layout.addWidget(activate_btn)
         status_layout.addWidget(deactivate_btn)
         users_card_layout.addWidget(status_panel)
@@ -5674,7 +5721,7 @@ class DashboardWindow(QWidget):
         create_layout = QVBoxLayout(create_panel)
         create_layout.setContentsMargins(14, 12, 14, 12)
         create_title = QLabel("Create New User", create_panel)
-        create_title.setStyleSheet("font-size: 13px; color: #0f172a; font-weight: 900;")
+        plain_label(create_title, "font-size: 13px; color: #0f172a; font-weight: 900")
         create_layout.addWidget(create_title)
         create_row = QHBoxLayout()
 
@@ -5697,6 +5744,7 @@ class DashboardWindow(QWidget):
 
         create_btn = QPushButton("Create User", create_panel)
         create_btn.setStyleSheet(self.primary_btn_style())
+        compact_button(create_btn, 132)
         create_row.addWidget(create_btn)
         create_layout.addLayout(create_row)
         users_card_layout.addWidget(create_panel)
@@ -5720,7 +5768,6 @@ class DashboardWindow(QWidget):
             load_users()
 
         create_btn.clicked.connect(create_user)
-        deactivate_btn.setText("Delete / Deactivate User")
         create_panel.setVisible(self.is_it_admin())
         status_panel.setVisible(self.is_it_admin())
         activate_btn.clicked.connect(lambda: set_selected_user_status(True))
@@ -5824,15 +5871,17 @@ class DashboardWindow(QWidget):
         drive_row_2.addWidget(gdrive_service_account_path, 1)
         save_integrations_btn = QPushButton("Save Integrations", drive_panel)
         save_integrations_btn.setStyleSheet(self.primary_btn_style())
+        compact_button(save_integrations_btn, 164)
         drive_row_2.addWidget(save_integrations_btn)
         test_integration_email_btn = QPushButton("Test Email", drive_panel)
         test_integration_email_btn.setStyleSheet(self.secondary_btn_style())
+        compact_button(test_integration_email_btn, 128)
         drive_row_2.addWidget(test_integration_email_btn)
         drive_layout.addLayout(drive_row_2)
 
         integration_status = QLabel("Load settings from the Raspberry Pi, edit, then save.", drive_panel)
         integration_status.setWordWrap(True)
-        integration_status.setStyleSheet("font-size: 12px; color: #64748b; font-weight: 700;")
+        plain_label(integration_status, "font-size: 12px; color: #64748b; font-weight: 700")
         drive_layout.addWidget(integration_status)
         integrations_layout.addWidget(drive_panel)
         integrations_layout.addStretch(1)
@@ -5849,7 +5898,7 @@ class DashboardWindow(QWidget):
         def set_integration_status(message, state="info"):
             colors = {"ok": "#047857", "error": "#b91c1c", "pending": "#b45309", "info": "#64748b"}
             integration_status.setText(message)
-            integration_status.setStyleSheet(f"font-size: 12px; color: {colors.get(state, '#64748b')}; font-weight: 800;")
+            plain_label(integration_status, f"font-size: 12px; color: {colors.get(state, '#64748b')}; font-weight: 800")
 
         def integration_payload():
             security = smtp_security.currentData()
@@ -5957,12 +6006,21 @@ class DashboardWindow(QWidget):
 
         footer = QHBoxLayout()
         footer_note = QLabel("Settings changes are audited where backend support is available.", dialog)
-        footer_note.setStyleSheet("font-size: 12px; color: #64748b;")
+        plain_label(footer_note, "font-size: 12px; color: #64748b")
         footer.addWidget(footer_note, 1)
         close_btn = QPushButton("Close", dialog)
         close_btn.setStyleSheet(self.primary_btn_style())
+        compact_button(close_btn, 112)
         close_btn.clicked.connect(dialog.accept)
         footer.addWidget(close_btn)
+        for label in dialog.findChildren(QLabel):
+            label.setFrameStyle(0)
+            style = label.styleSheet()
+            if "border:" not in style:
+                style += "; border: none;"
+            if "background" not in style:
+                style += "; background: transparent;"
+            label.setStyleSheet(style)
         layout.addLayout(footer)
         dialog.exec()
 

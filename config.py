@@ -10,7 +10,7 @@ else:
 ASSETS_DIR = BASE_DIR / "assets"
 
 APP_NAME = "Enhanced Living Whisperwood Demo"
-APP_VERSION = "2.2.4"
+APP_VERSION = "2.2.5"
 APP_CHANNEL = "demo"
 RELEASE_TAG_PREFIX = "demo-v"
 DEFAULT_PI_BASE_URL = "http://localhost:8080"
