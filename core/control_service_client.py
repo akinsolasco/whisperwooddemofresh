@@ -416,6 +416,21 @@ class ControlServiceClient:
             "recipients": recipients or [],
         })
 
+    def get_integration_settings(self) -> Dict[str, Any]:
+        return self._request("GET", "/integration-settings")
+
+    def save_integration_settings(self, settings: Dict[str, Any]) -> Dict[str, Any]:
+        payload = dict(settings or {})
+        primary = self._request("PUT", "/integration-settings", payload)
+        if primary.get("ok") or primary.get("status_code") not in {404, 405}:
+            return primary
+        return self._request("POST", "/integration-settings", payload)
+
+    def send_integration_test_email(self, recipients: Optional[list[str]] = None) -> Dict[str, Any]:
+        return self._request("POST", "/integration-settings/test-email", {
+            "recipients": recipients or [],
+        })
+
     def bootstrap_info(self) -> Dict[str, Any]:
         return self._request("GET", "/bootstrap/info")
 

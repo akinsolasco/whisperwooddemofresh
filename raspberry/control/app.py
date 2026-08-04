@@ -11,7 +11,7 @@ from email.message import EmailMessage
 from pathlib import Path
 import hashlib, os, json, platform, subprocess, shutil, psutil, requests, secrets, smtplib, string, tarfile, tempfile, time
 
-app = FastAPI(title="Whisperwood Control Service", version="0.6.1")
+app = FastAPI(title="Whisperwood Control Service", version="0.6.2")
 STARTED_AT = datetime.utcnow()
 
 app.add_middleware(
@@ -59,6 +59,19 @@ DEFAULT_BATTERY_ALERT_SETTINGS = {
     "recipient_emails": [],
     "email_cooldown_minutes": 60,
     "email_subject_prefix": "Whisperwood Battery Alert",
+}
+DEFAULT_INTEGRATION_SETTINGS = {
+    "smtp_host": SMTP_HOST,
+    "smtp_port": SMTP_PORT,
+    "smtp_username": SMTP_USERNAME,
+    "smtp_password": SMTP_PASSWORD,
+    "smtp_from_email": SMTP_FROM_EMAIL,
+    "smtp_from_name": SMTP_FROM_NAME,
+    "smtp_use_ssl": SMTP_USE_SSL,
+    "smtp_use_tls": SMTP_USE_TLS,
+    "gdrive_backup_target": GDRIVE_BACKUP_TARGET,
+    "gdrive_folder_link": "",
+    "gdrive_service_account_path": "",
 }
 
 def now():
@@ -240,6 +253,59 @@ def normalize_battery_alert_settings(raw: Any = None) -> dict[str, Any]:
     return data
 
 
+def normalize_integration_settings(raw: Any = None, previous: Any = None, preserve_blank_password: bool = False) -> dict[str, Any]:
+    data = dict(DEFAULT_INTEGRATION_SETTINGS)
+    if isinstance(previous, str) and previous.strip():
+        try:
+            previous = json.loads(previous)
+        except Exception:
+            previous = {}
+    if isinstance(previous, dict):
+        data.update(previous)
+    if isinstance(raw, str) and raw.strip():
+        try:
+            raw = json.loads(raw)
+        except Exception:
+            raw = {}
+    raw_dict = raw if isinstance(raw, dict) else {}
+    data.update(raw_dict)
+
+    if preserve_blank_password and not str(raw_dict.get("smtp_password") or "").strip():
+        previous_password = ""
+        if isinstance(previous, dict):
+            previous_password = str(previous.get("smtp_password") or "")
+        data["smtp_password"] = previous_password or str(DEFAULT_INTEGRATION_SETTINGS.get("smtp_password") or "")
+
+    for key in ["smtp_host", "smtp_username", "smtp_password", "smtp_from_email", "smtp_from_name", "gdrive_backup_target", "gdrive_folder_link", "gdrive_service_account_path"]:
+        data[key] = str(data.get(key) or "").strip()
+    try:
+        data["smtp_port"] = max(1, min(65535, int(data.get("smtp_port") or 587)))
+    except Exception:
+        data["smtp_port"] = 587
+    data["smtp_use_ssl"] = bool(data.get("smtp_use_ssl", False))
+    data["smtp_use_tls"] = bool(data.get("smtp_use_tls", True)) and not data["smtp_use_ssl"]
+    if not data["smtp_from_email"] and data["smtp_username"]:
+        data["smtp_from_email"] = data["smtp_username"]
+    if not data["smtp_from_name"]:
+        data["smtp_from_name"] = "Enhanced Living Whisperwood"
+    return data
+
+
+def get_integration_settings() -> dict[str, Any]:
+    return normalize_integration_settings(get_system_setting("integration_settings", {}))
+
+
+def public_integration_settings(settings: Any = None) -> dict[str, Any]:
+    data = normalize_integration_settings(settings if settings is not None else get_integration_settings())
+    public = dict(data)
+    public.pop("smtp_password", None)
+    public["smtp_password_configured"] = bool(data.get("smtp_password"))
+    public["email_configured"] = smtp_configured(data)
+    public["google_drive_configured"] = bool(data.get("gdrive_backup_target"))
+    public["rclone_available"] = bool(shutil.which("rclone"))
+    return public
+
+
 def get_system_setting(key: str, default: Any = None) -> Any:
     row = db_one("SELECT value_json FROM system_settings WHERE key=:key", {"key": key})
     if not row:
@@ -260,35 +326,37 @@ def save_system_setting(key: str, value: Any) -> None:
     """, {"key": key, "value_json": payload, "updated_at": now()})
 
 
-def smtp_configured() -> bool:
-    return bool(SMTP_HOST and SMTP_FROM_EMAIL and (SMTP_USERNAME or not SMTP_PASSWORD))
+def smtp_configured(settings: Any = None) -> bool:
+    cfg = normalize_integration_settings(settings if settings is not None else get_integration_settings())
+    return bool(cfg.get("smtp_host") and cfg.get("smtp_from_email") and (cfg.get("smtp_username") or not cfg.get("smtp_password")))
 
 
-def send_email_message(subject: str, body: str, recipients: list[str]) -> dict[str, Any]:
+def send_email_message(subject: str, body: str, recipients: list[str], settings: Any = None) -> dict[str, Any]:
+    cfg = normalize_integration_settings(settings if settings is not None else get_integration_settings())
     recipients = [str(email or "").strip() for email in recipients or [] if str(email or "").strip()]
     if not recipients:
         return {"ok": False, "skipped": True, "reason": "No email recipients configured"}
-    if not smtp_configured():
+    if not smtp_configured(cfg):
         return {"ok": False, "skipped": True, "reason": "SMTP is not configured on the Raspberry Pi"}
 
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = f"{SMTP_FROM_NAME} <{SMTP_FROM_EMAIL}>"
+    msg["From"] = f"{cfg.get('smtp_from_name')} <{cfg.get('smtp_from_email')}>"
     msg["To"] = ", ".join(recipients)
     msg.set_content(body)
 
     try:
-        if SMTP_USE_SSL:
-            with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=20) as server:
-                if SMTP_USERNAME:
-                    server.login(SMTP_USERNAME, SMTP_PASSWORD)
+        if cfg.get("smtp_use_ssl"):
+            with smtplib.SMTP_SSL(cfg.get("smtp_host"), int(cfg.get("smtp_port") or 465), timeout=20) as server:
+                if cfg.get("smtp_username"):
+                    server.login(cfg.get("smtp_username"), cfg.get("smtp_password"))
                 server.send_message(msg)
         else:
-            with smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=20) as server:
-                if SMTP_USE_TLS:
+            with smtplib.SMTP(cfg.get("smtp_host"), int(cfg.get("smtp_port") or 587), timeout=20) as server:
+                if cfg.get("smtp_use_tls"):
                     server.starttls()
-                if SMTP_USERNAME:
-                    server.login(SMTP_USERNAME, SMTP_PASSWORD)
+                if cfg.get("smtp_username"):
+                    server.login(cfg.get("smtp_username"), cfg.get("smtp_password"))
                 server.send_message(msg)
         return {"ok": True, "recipients": recipients}
     except Exception as exc:
@@ -403,19 +471,21 @@ def list_local_backups() -> list[dict[str, Any]]:
 
 
 def run_backup_upload(path: Path) -> dict[str, Any]:
-    if not GDRIVE_BACKUP_TARGET:
+    settings = get_integration_settings()
+    target = settings.get("gdrive_backup_target") or ""
+    if not target:
         return {"ok": True, "skipped": True, "reason": "Google Drive backup target is not configured"}
     if not shutil.which("rclone"):
         return {"ok": False, "skipped": True, "reason": "rclone is not installed on the Raspberry Pi"}
     result = subprocess.run(
-        ["rclone", "copy", str(path), GDRIVE_BACKUP_TARGET],
+        ["rclone", "copy", str(path), target],
         text=True,
         capture_output=True,
         timeout=600,
     )
     return {
         "ok": result.returncode == 0,
-        "target": GDRIVE_BACKUP_TARGET,
+        "target": target,
         "stdout": result.stdout[-2000:],
         "stderr": result.stderr[-2000:],
     }
@@ -430,7 +500,7 @@ def create_backup_archive(created_by: str = "system", upload_to_drive: bool = Tr
             "created_at": now(),
             "created_by": created_by or "system",
             "hostname": platform.node(),
-            "control_version": "0.6.1",
+            "control_version": "0.6.2",
             "database_url_configured": bool(DATABASE_URL),
         }
         (tmp_path / "metadata.json").write_text(json.dumps(metadata, indent=2), encoding="utf-8")
@@ -1098,6 +1168,21 @@ class BatteryTestEmailPayload(BaseModel):
     recipients: list[str] = Field(default_factory=list)
 
 
+class IntegrationSettingsPayload(BaseModel):
+    smtp_host: Optional[str] = ""
+    smtp_port: int = 587
+    smtp_username: Optional[str] = ""
+    smtp_password: Optional[str] = ""
+    smtp_from_email: Optional[str] = ""
+    smtp_from_name: Optional[str] = "Enhanced Living Whisperwood"
+    smtp_use_ssl: bool = False
+    smtp_use_tls: bool = True
+    gdrive_backup_target: Optional[str] = ""
+    gdrive_folder_link: Optional[str] = ""
+    gdrive_service_account_path: Optional[str] = ""
+    clear_smtp_password: bool = False
+
+
 class FirmwareReleasePayload(BaseModel):
     device_id: str = "all"
     released_by: Optional[str] = "system"
@@ -1135,7 +1220,7 @@ def health():
     return {
         "ok": True,
         "service": "control",
-        "version": "0.6.1",
+        "version": "0.6.2",
         "hostname": platform.node(),
         "time": now(),
         "uptime": f"{uptime_s}s",
@@ -1754,6 +1839,53 @@ def battery_alert_test_email(payload: BatteryTestEmailPayload, x_whisperwood_key
         raise HTTPException(status_code=400, detail=result)
     return result
 
+
+@app.get("/integration-settings")
+def integration_settings(x_whisperwood_key: str | None = Header(default=None)):
+    require_key(x_whisperwood_key)
+    return {"ok": True, "settings": public_integration_settings()}
+
+
+@app.post("/integration-settings")
+@app.put("/integration-settings")
+def save_integration_settings(payload: IntegrationSettingsPayload, x_whisperwood_key: str | None = Header(default=None)):
+    require_key(x_whisperwood_key)
+    previous = get_integration_settings()
+    incoming = payload.dict()
+    if incoming.pop("clear_smtp_password", False):
+        incoming["smtp_password"] = ""
+        settings = normalize_integration_settings(incoming, previous=previous)
+    else:
+        settings = normalize_integration_settings(incoming, previous=previous, preserve_blank_password=True)
+    save_system_setting("integration_settings", settings)
+    log_action(
+        "system",
+        "integration_settings",
+        "settings",
+        "success",
+        "Email and backup integration settings updated",
+        payload={**public_integration_settings(settings), "smtp_password_configured": bool(settings.get("smtp_password"))},
+        response={"ok": True},
+    )
+    return {"ok": True, "settings": public_integration_settings(settings)}
+
+
+@app.post("/integration-settings/test-email")
+def integration_settings_test_email(payload: BatteryTestEmailPayload, x_whisperwood_key: str | None = Header(default=None)):
+    require_key(x_whisperwood_key)
+    settings = get_integration_settings()
+    recipients = payload.recipients or normalize_battery_alert_settings(get_system_setting("battery_alert_settings", DEFAULT_BATTERY_ALERT_SETTINGS)).get("recipient_emails") or []
+    result = send_email_message(
+        "Enhanced Living Whisperwood: Email settings test",
+        "This is a test email from the Raspberry Pi Control Service.\n\nIf you received this, the saved SMTP settings are working.",
+        recipients,
+        settings=settings,
+    )
+    log_action("system", "integration_test_email", "settings", "success" if result.get("ok") else "failed", result.get("error") or result.get("reason") or "Integration test email sent", payload={"recipients": recipients}, response=result)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result)
+    return result
+
 @app.get("/system")
 def system_status(x_whisperwood_key: str | None = Header(default=None)):
     require_key(x_whisperwood_key)
@@ -1977,13 +2109,16 @@ def firmware_release(release_id: int, payload: FirmwareReleasePayload, x_whisper
 @app.get("/backups")
 def backups(x_whisperwood_key: str | None = Header(default=None)):
     require_key(x_whisperwood_key)
+    integrations = public_integration_settings()
     return {
         "ok": True,
         "backups": list_local_backups(),
         "google_drive": {
-            "configured": bool(GDRIVE_BACKUP_TARGET),
-            "target": GDRIVE_BACKUP_TARGET,
-            "rclone_available": bool(shutil.which("rclone")),
+            "configured": bool(integrations.get("gdrive_backup_target")),
+            "target": integrations.get("gdrive_backup_target") or "",
+            "folder_link": integrations.get("gdrive_folder_link") or "",
+            "service_account_path": integrations.get("gdrive_service_account_path") or "",
+            "rclone_available": bool(integrations.get("rclone_available")),
         },
     }
 
@@ -2004,7 +2139,7 @@ def bootstrap_info(x_whisperwood_key: str | None = Header(default=None)):
     require_key(x_whisperwood_key)
     return {
         "ok": True,
-        "version": "0.6.1",
+        "version": "0.6.2",
         "database_user": "whisperwood_app",
         "default_users": [
             {"username": "admin", "password": "admin123", "role": "admin"},

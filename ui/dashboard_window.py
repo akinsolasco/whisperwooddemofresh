@@ -1857,7 +1857,7 @@ class DashboardWindow(QWidget):
         """)
 
         self.it_control_stack = QStackedWidget(page)
-        self.it_control_stack.setGeometry(0, 145, 1218, 895)
+        self.it_control_stack.setGeometry(0, 145, 1218, 1040)
         self.it_control_stack.setStyleSheet("background: transparent;")
 
         sections = [
@@ -1876,7 +1876,7 @@ class DashboardWindow(QWidget):
 
         self.it_control_stack.setCurrentIndex(0)
         self.load_control_dashboard_placeholder()
-        return self.wrap_scroll_page(page, 1080)
+        return self.wrap_scroll_page(page, 1225)
 
     def control_section_icon(self, key):
         icon_map = {
@@ -2186,7 +2186,7 @@ class DashboardWindow(QWidget):
         message.setStyleSheet("font-size: 13px; color: #475569; font-weight: 700;")
 
         self.it_device_table = QTableWidget(page)
-        self.it_device_table.setGeometry(0, 205, 955, 250)
+        self.it_device_table.setGeometry(0, 205, 955, 220)
         self.it_device_table.setColumnCount(8)
         self.it_device_table.setHorizontalHeaderLabels(["Device", "Online", "IP", "Port", "FW", "Battery", "Power", "Last Seen"])
         self.it_device_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
@@ -2195,7 +2195,7 @@ class DashboardWindow(QWidget):
         self.it_device_table.setStyleSheet(self.table_style())
 
         battery_panel = QFrame(page)
-        battery_panel.setGeometry(0, 475, 955, 238)
+        battery_panel.setGeometry(0, 445, 955, 220)
         self.apply_frame_style(battery_panel, self.card_style())
 
         battery_title = QLabel("Battery Alert Policy", battery_panel)
@@ -2210,40 +2210,42 @@ class DashboardWindow(QWidget):
         low_label.setGeometry(178, 48, 75, 18)
         low_label.setStyleSheet(self.label_style())
         self.spin_battery_low = QSpinBox(battery_panel)
-        self.spin_battery_low.setGeometry(178, 70, 92, 38)
+        self.spin_battery_low.setGeometry(178, 70, 112, 38)
         self.spin_battery_low.setRange(1, 100)
         self.spin_battery_low.setSuffix("%")
         self.spin_battery_low.setStyleSheet(self.input_style())
 
         critical_label = QLabel("Critical at", battery_panel)
-        critical_label.setGeometry(288, 48, 95, 18)
+        critical_label.setGeometry(310, 48, 95, 18)
         critical_label.setStyleSheet(self.label_style())
         self.spin_battery_critical = QSpinBox(battery_panel)
-        self.spin_battery_critical.setGeometry(288, 70, 92, 38)
+        self.spin_battery_critical.setGeometry(310, 70, 112, 38)
         self.spin_battery_critical.setRange(1, 100)
         self.spin_battery_critical.setSuffix("%")
         self.spin_battery_critical.setStyleSheet(self.input_style())
+        self.spin_battery_low.valueChanged.connect(lambda value: self.spin_battery_critical.setMaximum(max(1, value)))
+        self.spin_battery_critical.setMaximum(self.spin_battery_low.value())
 
         cooldown_label = QLabel("Popup cooldown", battery_panel)
-        cooldown_label.setGeometry(398, 48, 130, 18)
+        cooldown_label.setGeometry(442, 48, 130, 18)
         cooldown_label.setStyleSheet(self.label_style())
         self.spin_battery_cooldown = QSpinBox(battery_panel)
-        self.spin_battery_cooldown.setGeometry(398, 70, 122, 38)
+        self.spin_battery_cooldown.setGeometry(442, 70, 136, 38)
         self.spin_battery_cooldown.setRange(1, 1440)
         self.spin_battery_cooldown.setSuffix(" min")
         self.spin_battery_cooldown.setStyleSheet(self.input_style())
 
         role_label = QLabel("Notify", battery_panel)
-        role_label.setGeometry(540, 48, 70, 18)
+        role_label.setGeometry(600, 48, 70, 18)
         role_label.setStyleSheet(self.label_style())
         self.chk_battery_role_it = QCheckBox("IT Admin", battery_panel)
-        self.chk_battery_role_it.setGeometry(540, 70, 95, 26)
+        self.chk_battery_role_it.setGeometry(600, 70, 95, 26)
         self.chk_battery_role_admin = QCheckBox("Admin", battery_panel)
-        self.chk_battery_role_admin.setGeometry(642, 70, 82, 26)
+        self.chk_battery_role_admin.setGeometry(702, 70, 82, 26)
         self.chk_battery_role_staff = QCheckBox("Staff", battery_panel)
-        self.chk_battery_role_staff.setGeometry(724, 70, 75, 26)
+        self.chk_battery_role_staff.setGeometry(784, 70, 75, 26)
         self.chk_battery_role_verifier = QCheckBox("Verifier", battery_panel)
-        self.chk_battery_role_verifier.setGeometry(800, 70, 86, 26)
+        self.chk_battery_role_verifier.setGeometry(860, 70, 86, 26)
         for checkbox in [
             self.chk_battery_role_it,
             self.chk_battery_role_admin,
@@ -2253,28 +2255,28 @@ class DashboardWindow(QWidget):
             checkbox.setStyleSheet(self.checkbox_style())
 
         self.chk_battery_email_enabled = QCheckBox("Send email alerts", battery_panel)
-        self.chk_battery_email_enabled.setGeometry(22, 114, 160, 26)
+        self.chk_battery_email_enabled.setGeometry(22, 118, 170, 26)
         self.chk_battery_email_enabled.setStyleSheet(self.checkbox_style())
 
         email_label = QLabel("Email recipients", battery_panel)
-        email_label.setGeometry(178, 112, 140, 18)
+        email_label.setGeometry(205, 112, 140, 18)
         email_label.setStyleSheet(self.label_style())
         self.txt_battery_emails = QLineEdit(battery_panel)
-        self.txt_battery_emails.setGeometry(178, 136, 410, 38)
+        self.txt_battery_emails.setGeometry(205, 136, 390, 38)
         self.txt_battery_emails.setPlaceholderText("it@example.com, manager@example.com")
         self.txt_battery_emails.setStyleSheet(self.input_style())
 
         email_cooldown_label = QLabel("Email cooldown", battery_panel)
-        email_cooldown_label.setGeometry(606, 112, 120, 18)
+        email_cooldown_label.setGeometry(615, 112, 120, 18)
         email_cooldown_label.setStyleSheet(self.label_style())
         self.spin_battery_email_cooldown = QSpinBox(battery_panel)
-        self.spin_battery_email_cooldown.setGeometry(606, 136, 122, 38)
+        self.spin_battery_email_cooldown.setGeometry(615, 136, 136, 38)
         self.spin_battery_email_cooldown.setRange(5, 1440)
         self.spin_battery_email_cooldown.setSuffix(" min")
         self.spin_battery_email_cooldown.setStyleSheet(self.input_style())
 
         self.btn_test_battery_email = QPushButton("Test Email", battery_panel)
-        self.btn_test_battery_email.setGeometry(746, 136, 112, 38)
+        self.btn_test_battery_email.setGeometry(768, 136, 112, 38)
         self.btn_test_battery_email.setStyleSheet(self.secondary_btn_style())
         self.btn_test_battery_email.clicked.connect(self.send_battery_test_email)
 
@@ -2284,12 +2286,12 @@ class DashboardWindow(QWidget):
         self.btn_save_battery_alerts.clicked.connect(self.save_battery_alert_settings_from_ui)
 
         self.battery_alert_status = QLabel("Battery popups use the latest ESP32 status sent through the Raspberry Pi.", battery_panel)
-        self.battery_alert_status.setGeometry(22, 192, 900, 28)
+        self.battery_alert_status.setGeometry(22, 184, 900, 28)
         self.battery_alert_status.setWordWrap(True)
         self.battery_alert_status.setStyleSheet("font-size: 12px; color: #64748b; font-weight: 700;")
 
         wifi_panel = QFrame(page)
-        wifi_panel.setGeometry(0, 735, 955, 250)
+        wifi_panel.setGeometry(0, 690, 955, 260)
         self.apply_frame_style(wifi_panel, self.card_style())
 
         wifi_title = QLabel("ESP32 WiFi Provisioning", wifi_panel)
@@ -5422,6 +5424,18 @@ class DashboardWindow(QWidget):
         header.setStyleSheet("font-size: 13px; color: #334155; background: transparent; border: none;")
         layout.addWidget(header)
 
+        scroll = QScrollArea(dialog)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.Shape.NoFrame)
+        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+        body = QWidget(scroll)
+        body.setStyleSheet("background: transparent;")
+        body_layout = QVBoxLayout(body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.setSpacing(12)
+        scroll.setWidget(body)
+        layout.addWidget(scroll, 1)
+
         password_panel = QFrame(dialog)
         password_panel.setStyleSheet("QFrame { background-color: #ffffff; border: 1px solid #d8e1ea; border-radius: 8px; }")
         password_layout = QHBoxLayout(password_panel)
@@ -5433,7 +5447,7 @@ class DashboardWindow(QWidget):
         change_password_btn = QPushButton("Change My Password", password_panel)
         change_password_btn.setStyleSheet(self.primary_btn_style())
         password_layout.addWidget(change_password_btn)
-        layout.addWidget(password_panel)
+        body_layout.addWidget(password_panel)
 
         users_table = QTableWidget(dialog)
         users_table.setColumnCount(5)
@@ -5442,7 +5456,8 @@ class DashboardWindow(QWidget):
         users_table.verticalHeader().setVisible(False)
         users_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         users_table.setStyleSheet(self.table_style())
-        layout.addWidget(users_table)
+        users_table.setMinimumHeight(190)
+        body_layout.addWidget(users_table)
 
         status_panel = QFrame(dialog)
         status_panel.setStyleSheet("QFrame { background-color: #ffffff; border: 1px solid #d8e1ea; border-radius: 8px; }")
@@ -5458,7 +5473,7 @@ class DashboardWindow(QWidget):
         deactivate_btn.setStyleSheet(self.secondary_btn_style())
         status_layout.addWidget(activate_btn)
         status_layout.addWidget(deactivate_btn)
-        layout.addWidget(status_panel)
+        body_layout.addWidget(status_panel)
 
         def load_users():
             auth = AuthService()
@@ -5540,7 +5555,7 @@ class DashboardWindow(QWidget):
         create_btn = QPushButton("Create User", create_panel)
         create_btn.setStyleSheet(self.primary_btn_style())
         create_layout.addWidget(create_btn)
-        layout.addWidget(create_panel)
+        body_layout.addWidget(create_panel)
 
         def create_user():
             if not self.is_it_admin():
@@ -5564,6 +5579,225 @@ class DashboardWindow(QWidget):
         activate_btn.clicked.connect(lambda: set_selected_user_status(True))
         deactivate_btn.clicked.connect(lambda: set_selected_user_status(False))
         change_password_btn.clicked.connect(lambda: self.show_change_password_dialog(force=False))
+
+        integration_panel = QFrame(dialog)
+        integration_panel.setStyleSheet("QFrame { background-color: #ffffff; border: 1px solid #d8e1ea; border-radius: 8px; }")
+        integration_layout = QVBoxLayout(integration_panel)
+        integration_layout.setContentsMargins(14, 14, 14, 14)
+        integration_layout.setSpacing(10)
+
+        integration_title = QLabel("Email and Backup Integrations", integration_panel)
+        integration_title.setStyleSheet("font-size: 16px; font-weight: 800; color: #0f172a;")
+        integration_layout.addWidget(integration_title)
+
+        integration_hint = QLabel(
+            "Saved to the Raspberry Pi Control Service. SMTP powers battery emails. Google Drive backups use an rclone target such as whisperwooddrive:Backups/WhisperwoodDemo.",
+            integration_panel,
+        )
+        integration_hint.setWordWrap(True)
+        integration_hint.setStyleSheet("font-size: 12px; color: #64748b;")
+        integration_layout.addWidget(integration_hint)
+
+        smtp_row_1 = QHBoxLayout()
+        smtp_host = QLineEdit(integration_panel)
+        smtp_host.setPlaceholderText("SMTP host")
+        smtp_host.setStyleSheet(self.input_style())
+        smtp_row_1.addWidget(smtp_host, 3)
+        smtp_port = QSpinBox(integration_panel)
+        smtp_port.setRange(1, 65535)
+        smtp_port.setValue(587)
+        smtp_port.setStyleSheet(self.input_style())
+        smtp_row_1.addWidget(smtp_port, 1)
+        smtp_security = QComboBox(integration_panel)
+        smtp_security.addItem("TLS / STARTTLS", "tls")
+        smtp_security.addItem("SSL", "ssl")
+        smtp_security.addItem("No encryption", "none")
+        smtp_security.setStyleSheet(self.input_style())
+        smtp_row_1.addWidget(smtp_security, 2)
+        integration_layout.addLayout(smtp_row_1)
+
+        smtp_row_2 = QHBoxLayout()
+        smtp_username = QLineEdit(integration_panel)
+        smtp_username.setPlaceholderText("SMTP username")
+        smtp_username.setStyleSheet(self.input_style())
+        smtp_row_2.addWidget(smtp_username, 1)
+        smtp_password = QLineEdit(integration_panel)
+        smtp_password.setPlaceholderText("SMTP password or app password")
+        smtp_password.setEchoMode(QLineEdit.EchoMode.Password)
+        smtp_password.setStyleSheet(self.input_style())
+        smtp_row_2.addWidget(smtp_password, 1)
+        clear_smtp_password = QCheckBox("Clear saved password", integration_panel)
+        clear_smtp_password.setStyleSheet(self.checkbox_style())
+        smtp_row_2.addWidget(clear_smtp_password)
+        integration_layout.addLayout(smtp_row_2)
+
+        smtp_row_3 = QHBoxLayout()
+        smtp_from_email = QLineEdit(integration_panel)
+        smtp_from_email.setPlaceholderText("Sender email")
+        smtp_from_email.setStyleSheet(self.input_style())
+        smtp_row_3.addWidget(smtp_from_email, 1)
+        smtp_from_name = QLineEdit(integration_panel)
+        smtp_from_name.setPlaceholderText("Sender name")
+        smtp_from_name.setStyleSheet(self.input_style())
+        smtp_row_3.addWidget(smtp_from_name, 1)
+        integration_layout.addLayout(smtp_row_3)
+
+        battery_email_row = QHBoxLayout()
+        settings_battery_email_enabled = QCheckBox("Enable battery email alerts", integration_panel)
+        settings_battery_email_enabled.setStyleSheet(self.checkbox_style())
+        battery_email_row.addWidget(settings_battery_email_enabled)
+        battery_recipients = QLineEdit(integration_panel)
+        battery_recipients.setPlaceholderText("Battery alert recipients, separated by commas")
+        battery_recipients.setStyleSheet(self.input_style())
+        battery_email_row.addWidget(battery_recipients, 1)
+        integration_layout.addLayout(battery_email_row)
+
+        drive_row_1 = QHBoxLayout()
+        gdrive_target = QLineEdit(integration_panel)
+        gdrive_target.setPlaceholderText("rclone target, for example whisperwooddrive:Backups/WhisperwoodDemo")
+        gdrive_target.setStyleSheet(self.input_style())
+        drive_row_1.addWidget(gdrive_target, 2)
+        gdrive_folder_link = QLineEdit(integration_panel)
+        gdrive_folder_link.setPlaceholderText("Google Drive folder link / note")
+        gdrive_folder_link.setStyleSheet(self.input_style())
+        drive_row_1.addWidget(gdrive_folder_link, 1)
+        integration_layout.addLayout(drive_row_1)
+
+        drive_row_2 = QHBoxLayout()
+        gdrive_service_account_path = QLineEdit(integration_panel)
+        gdrive_service_account_path.setPlaceholderText("Optional service-account JSON path on Pi")
+        gdrive_service_account_path.setStyleSheet(self.input_style())
+        drive_row_2.addWidget(gdrive_service_account_path, 1)
+        save_integrations_btn = QPushButton("Save Integrations", integration_panel)
+        save_integrations_btn.setStyleSheet(self.primary_btn_style())
+        drive_row_2.addWidget(save_integrations_btn)
+        test_integration_email_btn = QPushButton("Test Email", integration_panel)
+        test_integration_email_btn.setStyleSheet(self.secondary_btn_style())
+        drive_row_2.addWidget(test_integration_email_btn)
+        integration_layout.addLayout(drive_row_2)
+
+        integration_status = QLabel("Load settings from the Raspberry Pi, edit, then save.", integration_panel)
+        integration_status.setWordWrap(True)
+        integration_status.setStyleSheet("font-size: 12px; color: #64748b; font-weight: 700;")
+        integration_layout.addWidget(integration_status)
+        body_layout.addWidget(integration_panel)
+
+        def parse_settings_emails(text):
+            values = []
+            for part in (text or "").replace(";", ",").split(","):
+                email = part.strip()
+                if email and "@" in email and email.lower() not in [existing.lower() for existing in values]:
+                    values.append(email)
+            return values
+
+        def set_integration_status(message, state="info"):
+            colors = {"ok": "#047857", "error": "#b91c1c", "pending": "#b45309", "info": "#64748b"}
+            integration_status.setText(message)
+            integration_status.setStyleSheet(f"font-size: 12px; color: {colors.get(state, '#64748b')}; font-weight: 800;")
+
+        def integration_payload():
+            security = smtp_security.currentData()
+            return {
+                "smtp_host": smtp_host.text().strip(),
+                "smtp_port": smtp_port.value(),
+                "smtp_username": smtp_username.text().strip(),
+                "smtp_password": smtp_password.text(),
+                "smtp_from_email": smtp_from_email.text().strip(),
+                "smtp_from_name": smtp_from_name.text().strip(),
+                "smtp_use_ssl": security == "ssl",
+                "smtp_use_tls": security == "tls",
+                "gdrive_backup_target": gdrive_target.text().strip(),
+                "gdrive_folder_link": gdrive_folder_link.text().strip(),
+                "gdrive_service_account_path": gdrive_service_account_path.text().strip(),
+                "clear_smtp_password": clear_smtp_password.isChecked(),
+            }
+
+        def load_integration_settings():
+            if not self.server_mode:
+                set_integration_status("Integration settings require the Raspberry Pi Control Service.", "error")
+                return
+            result = self.control_client(timeout=6.0).get_integration_settings()
+            if result.get("ok"):
+                data = (result.get("data") or {}).get("settings") or {}
+                smtp_host.setText(data.get("smtp_host") or "")
+                smtp_port.setValue(int(data.get("smtp_port") or 587))
+                smtp_username.setText(data.get("smtp_username") or "")
+                smtp_password.clear()
+                smtp_password.setPlaceholderText("Password already saved; leave blank to keep it" if data.get("smtp_password_configured") else "SMTP password or app password")
+                smtp_from_email.setText(data.get("smtp_from_email") or "")
+                smtp_from_name.setText(data.get("smtp_from_name") or "Enhanced Living Whisperwood")
+                security_mode = "tls"
+                if data.get("smtp_use_ssl"):
+                    security_mode = "ssl"
+                elif data.get("smtp_use_tls"):
+                    security_mode = "tls"
+                else:
+                    security_mode = "none"
+                security_index = smtp_security.findData(security_mode)
+                smtp_security.setCurrentIndex(security_index if security_index >= 0 else 0)
+                gdrive_target.setText(data.get("gdrive_backup_target") or "")
+                gdrive_folder_link.setText(data.get("gdrive_folder_link") or "")
+                gdrive_service_account_path.setText(data.get("gdrive_service_account_path") or "")
+                email_state = "SMTP ready" if data.get("email_configured") else "SMTP not ready"
+                drive_state = "Drive target ready" if data.get("google_drive_configured") else "Drive target not set"
+                rclone_state = "rclone installed" if data.get("rclone_available") else "rclone missing on Pi"
+                set_integration_status(f"{email_state}. {drive_state}. {rclone_state}.", "ok" if data.get("email_configured") else "pending")
+            else:
+                set_integration_status(result.get("error") or "Could not load integration settings.", "error")
+            battery_settings = self.load_battery_alert_settings(quiet=True, timeout=4.0)
+            settings_battery_email_enabled.setChecked(bool(battery_settings.get("email_enabled", False)))
+            battery_recipients.setText(", ".join(battery_settings.get("recipient_emails") or []))
+
+        def save_integrations(show_popup=True):
+            if not self.server_mode:
+                set_integration_status("Connect to the Raspberry Pi Control Service before saving integrations.", "error")
+                return False
+            set_integration_status("Saving integration settings...", "pending")
+            result = self.control_client(timeout=8.0).save_integration_settings(integration_payload())
+            if not result.get("ok"):
+                set_integration_status(result.get("error") or "Integration settings could not be saved.", "error")
+                return False
+            smtp_password.clear()
+            clear_smtp_password.setChecked(False)
+            data = (result.get("data") or {}).get("settings") or {}
+            smtp_password.setPlaceholderText("Password already saved; leave blank to keep it" if data.get("smtp_password_configured") else "SMTP password or app password")
+
+            battery_settings = self.normalize_battery_alert_settings(self.battery_alert_settings)
+            battery_settings["email_enabled"] = settings_battery_email_enabled.isChecked()
+            battery_settings["recipient_emails"] = parse_settings_emails(battery_recipients.text())
+            saved_battery = self.control_client(timeout=5.0).save_battery_alert_settings(battery_settings)
+            if saved_battery.get("ok"):
+                payload = saved_battery.get("data") or {}
+                self.battery_alert_settings = self.normalize_battery_alert_settings(payload.get("settings") or battery_settings)
+                self.save_local_battery_alert_settings(self.battery_alert_settings)
+                self.apply_battery_alert_settings_to_ui()
+
+            email_state = "SMTP ready" if data.get("email_configured") else "SMTP saved but not complete"
+            drive_state = "Google Drive target saved" if data.get("google_drive_configured") else "Google Drive target not set"
+            set_integration_status(f"{email_state}. {drive_state}.", "ok" if data.get("email_configured") else "pending")
+            if show_popup:
+                self.show_info("Settings Saved", "Email and backup integration settings were saved to the Raspberry Pi.")
+            return True
+
+        def test_integration_email():
+            recipients = parse_settings_emails(battery_recipients.text())
+            if not recipients:
+                self.show_error("No recipients", "Enter at least one recipient email before testing.")
+                return
+            if not save_integrations(show_popup=False):
+                return
+            set_integration_status("Sending test email...", "pending")
+            result = self.control_client(timeout=25.0).send_integration_test_email(recipients)
+            if result.get("ok"):
+                set_integration_status("Test email sent. Check the recipient inbox.", "ok")
+                self.show_info("Email Test", "Test email sent successfully.")
+            else:
+                set_integration_status(result.get("error") or "Test email failed.", "error")
+                self.show_error("Email Test Failed", result.get("error") or "Test email failed.")
+
+        save_integrations_btn.clicked.connect(lambda: save_integrations(show_popup=True))
+        test_integration_email_btn.clicked.connect(test_integration_email)
+        load_integration_settings()
 
         close_btn = QPushButton("Close", dialog)
         close_btn.setStyleSheet(self.primary_btn_style())
