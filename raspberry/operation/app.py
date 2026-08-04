@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
 from fastapi import Body, FastAPI, File, Form, HTTPException, UploadFile
-from PIL import Image, ImageOps
+from PIL import Image, ImageFilter, ImageOps
 
 
 HOST = os.getenv("WHISPERWOOD_TCP_HOST", "0.0.0.0")
@@ -31,7 +31,7 @@ IMAGE_RESYNC_COOLDOWN_S = int(os.getenv("WHISPERWOOD_IMAGE_RESYNC_COOLDOWN_S", "
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(IMAGE_CACHE_DIR, exist_ok=True)
 
-app = FastAPI(title="Whisperwood Operation Manager", version="0.3.5")
+app = FastAPI(title="Whisperwood Operation Manager", version="0.3.6")
 
 
 def utc_now() -> str:
@@ -98,13 +98,21 @@ def encode_highlights(highlights: List[dict]) -> str:
 def image_to_rgb565_bytes(file_bytes: bytes, width: int = LCD_W, height: int = LCD_H) -> bytes:
     image = Image.open(io.BytesIO(file_bytes))
     image = ImageOps.exif_transpose(image).convert("RGB")
-    if image.height > image.width:
-        image = image.rotate(-90, expand=True)
     try:
         resample_method = Image.Resampling.LANCZOS
     except AttributeError:
         resample_method = Image.LANCZOS
-    image = ImageOps.fit(image, (width, height), method=resample_method, centering=(0.5, 0.5))
+
+    # Build an exact 320x240 LCD frame while preserving the subject's natural orientation.
+    background = ImageOps.fit(image, (width, height), method=resample_method, centering=(0.5, 0.5))
+    background = background.filter(ImageFilter.GaussianBlur(radius=8))
+    background = ImageOps.autocontrast(background)
+
+    foreground = ImageOps.contain(image, (width, height), method=resample_method)
+    paste_x = (width - foreground.width) // 2
+    paste_y = (height - foreground.height) // 2
+    background.paste(foreground, (paste_x, paste_y))
+    image = background
 
     pixels = image.load()
     out = bytearray(width * height * 2)
@@ -852,7 +860,7 @@ def health() -> Dict[str, Any]:
     return {
         "ok": True,
         "service": "operation",
-        "version": "0.3.5",
+        "version": "0.3.6",
         "time": utc_now(),
         "tcp_host": HOST,
         "tcp_port": TCP_PORT,
