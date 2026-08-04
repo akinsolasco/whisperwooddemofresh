@@ -34,6 +34,47 @@ class SafeSpinner(QtWidgets.QWidget):
         painter.drawArc(rect, (90 - self.angle) * 16, 220 * 16)
 
 
+class UpdateWorker(QtCore.QObject):
+    status = QtCore.pyqtSignal(str)
+    finished = QtCore.pyqtSignal(dict)
+
+    def __init__(self, updater: UpdaterService):
+        super().__init__()
+        self.updater = updater
+
+    @QtCore.pyqtSlot()
+    def run(self):
+        try:
+            self.status.emit("Checking for updates...")
+            result = self.updater.check_for_updates()
+
+            if not result.get("enabled", True):
+                self.finished.emit({"action": "continue", "message": "Updater not enabled"})
+                return
+
+            if not result.get("has_update"):
+                self.finished.emit({"action": "continue", "message": result.get("message") or "Application is up to date"})
+                return
+
+            source = result.get("source") or "update service"
+            version = result.get("latest_version") or "latest"
+            self.status.emit(f"Downloading v{version} from {source}...")
+            download = self.updater.download_update(result)
+
+            if not download.get("success"):
+                self.finished.emit({"action": "continue", "message": download.get("message") or "Update download failed"})
+                return
+
+            self.status.emit("Installing update...")
+            install = self.updater.install_update_silently(download.get("path"))
+            if install.get("success"):
+                self.finished.emit({"action": "quit", "version": version})
+            else:
+                self.finished.emit({"action": "continue", "message": install.get("message") or "Update install could not start"})
+        except Exception as exc:
+            self.finished.emit({"action": "continue", "message": f"Update check failed: {exc}"})
+
+
 class SplashScreen(QtWidgets.QWidget):
     finished = QtCore.pyqtSignal()
 
@@ -44,6 +85,8 @@ class SplashScreen(QtWidgets.QWidget):
         self.progress_value = 0
         self.message_index = 0
         self.update_checked = False
+        self.update_in_progress = False
+        self.loading_base_text = "Starting"
         self.updater = UpdaterService()
 
         self.messages = [
@@ -168,10 +211,13 @@ class SplashScreen(QtWidgets.QWidget):
 
     def animate_loading_text(self):
         self.dot_count = (self.dot_count + 1) % 4
-        self.loading_label.setText("Starting" + "." * self.dot_count)
+        self.loading_label.setText(self.loading_base_text + "." * self.dot_count)
 
     def update_progress(self):
-        self.progress_value += 1
+        if self.update_in_progress and self.progress_value >= 94:
+            self.progress_value = 94
+        else:
+            self.progress_value += 1
 
         if self.message_index < len(self.messages) and self.progress_value in (10, 30, 50, 70):
             self.subtitle.setText(self.messages[self.message_index])
@@ -179,55 +225,57 @@ class SplashScreen(QtWidgets.QWidget):
 
         if self.progress_value == 45 and not self.update_checked:
             self.update_checked = True
-            self.handle_update_check()
+            self.start_update_check()
 
         self.progress.setValue(self.progress_value)
         self.percent.setText(f"{self.progress_value}%")
 
-        if self.progress_value >= 100:
+        if self.progress_value >= 100 and not self.update_in_progress:
             self.dot_timer.stop()
             self.progress_timer.stop()
             self.loading_label.setText("Ready")
             QtCore.QTimer.singleShot(300, self.finish)
 
-    def handle_update_check(self):
+    def start_update_check(self):
+        self.update_in_progress = True
+        self.loading_base_text = "Checking"
         self.boot_log.setText("Checking for updates...")
-        QtWidgets.QApplication.processEvents()
 
-        result = self.updater.check_for_updates()
+        self.update_thread = QtCore.QThread(self)
+        self.update_worker = UpdateWorker(self.updater)
+        self.update_worker.moveToThread(self.update_thread)
+        self.update_thread.started.connect(self.update_worker.run)
+        self.update_worker.status.connect(self.handle_update_status)
+        self.update_worker.finished.connect(self.handle_update_finished)
+        self.update_worker.finished.connect(self.update_thread.quit)
+        self.update_worker.finished.connect(self.update_worker.deleteLater)
+        self.update_thread.finished.connect(self.update_thread.deleteLater)
+        self.update_thread.start()
 
-        if not result.get("enabled", True):
-            self.boot_log.setText("Updater not enabled")
-            return
-
-        if not result["has_update"]:
-            self.boot_log.setText(result["message"])
-            return
-
-        source = result.get("source") or "update service"
-        self.boot_log.setText(f"Update found: v{result['latest_version']} via {source}")
-        QtWidgets.QApplication.processEvents()
-
-        download = self.updater.download_update(result)
-
-        if not download["success"]:
-            self.boot_log.setText(download["message"])
-            return
-
-        self.boot_log.setText("Update downloaded. Installing silently...")
-        QtWidgets.QApplication.processEvents()
-
-        install = self.updater.install_update_silently(download["path"])
-        if install.get("success"):
-            self.subtitle.setText(f"Updating to v{result['latest_version']}")
-            self.loading_label.setText("Installing update...")
-            self.boot_log.setText("The app will reopen after the update finishes.")
-            self.progress.setValue(96)
-            self.percent.setText("96%")
-            QtWidgets.QApplication.processEvents()
-            QtWidgets.QApplication.quit()
+    def handle_update_status(self, message: str):
+        self.boot_log.setText(message)
+        lowered = (message or "").lower()
+        if "download" in lowered:
+            self.loading_base_text = "Downloading update"
+        elif "install" in lowered:
+            self.loading_base_text = "Installing update"
         else:
-            self.boot_log.setText(install.get("message") or "Update install could not start")
+            self.loading_base_text = "Checking"
+
+    def handle_update_finished(self, result: dict):
+        if result.get("action") == "quit":
+            self.subtitle.setText(f"Updating to v{result.get('version') or 'latest'}")
+            self.loading_base_text = "Installing update"
+            self.boot_log.setText("The app will reopen after the update finishes.")
+            self.progress_value = max(self.progress_value, 96)
+            self.progress.setValue(self.progress_value)
+            self.percent.setText(f"{self.progress_value}%")
+            QtWidgets.QApplication.quit()
+            return
+
+        self.update_in_progress = False
+        self.loading_base_text = "Starting"
+        self.boot_log.setText(result.get("message") or "Update check finished")
 
     def finish(self):
         self.finished.emit()
