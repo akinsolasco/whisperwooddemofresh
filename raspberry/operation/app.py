@@ -31,7 +31,7 @@ IMAGE_RESYNC_COOLDOWN_S = int(os.getenv("WHISPERWOOD_IMAGE_RESYNC_COOLDOWN_S", "
 os.makedirs(DATA_DIR, exist_ok=True)
 os.makedirs(IMAGE_CACHE_DIR, exist_ok=True)
 
-app = FastAPI(title="Whisperwood Operation Manager", version="0.3.3")
+app = FastAPI(title="Whisperwood Operation Manager", version="0.3.5")
 
 
 def utc_now() -> str:
@@ -96,12 +96,15 @@ def encode_highlights(highlights: List[dict]) -> str:
 
 
 def image_to_rgb565_bytes(file_bytes: bytes, width: int = LCD_W, height: int = LCD_H) -> bytes:
-    image = Image.open(io.BytesIO(file_bytes)).convert("RGB")
+    image = Image.open(io.BytesIO(file_bytes))
+    image = ImageOps.exif_transpose(image).convert("RGB")
+    if image.height > image.width:
+        image = image.rotate(-90, expand=True)
     try:
         resample_method = Image.Resampling.LANCZOS
     except AttributeError:
         resample_method = Image.LANCZOS
-    image = ImageOps.fit(image, (width, height), method=resample_method)
+    image = ImageOps.fit(image, (width, height), method=resample_method, centering=(0.5, 0.5))
 
     pixels = image.load()
     out = bytearray(width * height * 2)
@@ -849,7 +852,7 @@ def health() -> Dict[str, Any]:
     return {
         "ok": True,
         "service": "operation",
-        "version": "0.3.3",
+        "version": "0.3.5",
         "time": utc_now(),
         "tcp_host": HOST,
         "tcp_port": TCP_PORT,
