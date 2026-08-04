@@ -1,10 +1,12 @@
 import requests
 import subprocess
 import sys
+import os
 from pathlib import Path
 from typing import Dict, List, Optional
 
 from config import (
+    APP_NAME,
     APP_VERSION,
     DEFAULT_CONTROL_SERVICE_HOST,
     DEFAULT_DOWNLOAD_SITE_PORT,
@@ -202,12 +204,14 @@ class UpdaterService:
         launcher = self.download_dir / "silent_update_launcher.bat"
         app_path = Path(sys.executable)
         installer = str(path)
-        restart_line = f'start "" "{app_path}"' if app_path.suffix.lower() == ".exe" else "rem Source/dev run detected; installer will finish without app restart."
+        local_programs = Path(os.getenv("LOCALAPPDATA", "")) / "Programs" / APP_NAME / app_path.name
+        restart_path = local_programs if local_programs.exists() else app_path
+        restart_line = f'start "" "{restart_path}"' if app_path.suffix.lower() == ".exe" else "rem Source/dev run detected; installer will finish without app restart."
         launcher.write_text(
             "\n".join([
                 "@echo off",
                 "timeout /t 2 /nobreak >nul",
-                f'start "" /wait "{installer}" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS',
+                f'start "" /wait "{installer}" /VERYSILENT /SUPPRESSMSGBOXES /NORESTART /CLOSEAPPLICATIONS',
                 restart_line,
                 'del "%~f0"',
                 "",
