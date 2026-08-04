@@ -15,7 +15,7 @@ from PyQt6.QtWidgets import (
     QComboBox, QCheckBox, QListWidget, QListWidgetItem, QMessageBox,
     QFileDialog, QStackedWidget, QTableWidget, QTableWidgetItem, QHeaderView,
     QDialog, QHBoxLayout, QTimeEdit, QAbstractSpinBox, QScrollArea, QStyle, QMenu, QSpinBox,
-    QInputDialog, QApplication
+    QInputDialog, QApplication, QTabWidget
 )
 
 from config import APP_NAME, APP_VERSION, DEFAULT_PI_BASE_URL, ASSETS_DIR, ROLE_LABELS, APP_DATA_DIR
@@ -5412,58 +5412,198 @@ class DashboardWindow(QWidget):
             return
         dialog = QDialog(self)
         dialog.setWindowTitle("Settings")
-        dialog.resize(880, 680)
-        dialog.setStyleSheet("QDialog { background-color: #f3f7fb; color: #0f172a; }")
+        dialog.resize(980, 760)
+        dialog.setMinimumSize(900, 700)
+        dialog.setStyleSheet("""
+            QDialog {
+                background-color: #f3f7fb;
+                color: #0f172a;
+            }
+            QTabWidget::pane {
+                border: 1px solid #d8e1ea;
+                border-radius: 8px;
+                background-color: #ffffff;
+                top: -1px;
+            }
+            QTabBar::tab {
+                background-color: #e8f0f5;
+                color: #334155;
+                border: 1px solid #d8e1ea;
+                border-bottom: none;
+                padding: 10px 18px;
+                margin-right: 6px;
+                border-top-left-radius: 8px;
+                border-top-right-radius: 8px;
+                font-size: 13px;
+                font-weight: 800;
+            }
+            QTabBar::tab:selected {
+                background-color: #0f766e;
+                color: #ffffff;
+                border-color: #0f766e;
+            }
+        """)
         layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(18, 18, 18, 18)
+        layout.setSpacing(14)
 
-        header = QLabel(
-            f"Signed in as {self.current_user.get('username', 'admin')} | {self.role_label()}\n"
-            "IT settings manage system users and your own password."
-        )
-        header.setWordWrap(True)
-        header.setStyleSheet("font-size: 13px; color: #334155; background: transparent; border: none;")
+        header = QFrame(dialog)
+        header.setFixedHeight(112)
+        header.setStyleSheet("""
+            QFrame {
+                background-color: #103b36;
+                border: 1px solid #0f766e;
+                border-radius: 8px;
+            }
+        """)
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(22, 18, 22, 18)
+
+        header_text = QVBoxLayout()
+        title = QLabel("IT Admin Settings", header)
+        title.setStyleSheet("font-size: 24px; font-weight: 900; color: #ffffff;")
+        subtitle = QLabel("Manage secure access, integrations, and operational settings from one clean control point.", header)
+        subtitle.setWordWrap(True)
+        subtitle.setStyleSheet("font-size: 13px; color: #d8f3ee;")
+        header_text.addWidget(title)
+        header_text.addWidget(subtitle)
+        header_text.addStretch(1)
+        header_layout.addLayout(header_text, 1)
+
+        profile_chip = QFrame(header)
+        profile_chip.setFixedSize(275, 72)
+        profile_chip.setStyleSheet("""
+            QFrame {
+                background-color: #ffffff;
+                border: none;
+                border-radius: 8px;
+            }
+        """)
+        chip_layout = QVBoxLayout(profile_chip)
+        chip_layout.setContentsMargins(14, 10, 14, 10)
+        chip_user = QLabel(self.current_user.get("username", "admin"), profile_chip)
+        chip_user.setStyleSheet("font-size: 18px; font-weight: 900; color: #0f172a;")
+        chip_role = QLabel(self.role_label(), profile_chip)
+        chip_role.setStyleSheet("font-size: 12px; color: #0f766e; font-weight: 800;")
+        chip_layout.addWidget(chip_user)
+        chip_layout.addWidget(chip_role)
+        header_layout.addWidget(profile_chip)
         layout.addWidget(header)
 
-        scroll = QScrollArea(dialog)
-        scroll.setWidgetResizable(True)
-        scroll.setFrameShape(QFrame.Shape.NoFrame)
-        scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
-        body = QWidget(scroll)
-        body.setStyleSheet("background: transparent;")
-        body_layout = QVBoxLayout(body)
-        body_layout.setContentsMargins(0, 0, 0, 0)
-        body_layout.setSpacing(12)
-        scroll.setWidget(body)
-        layout.addWidget(scroll, 1)
+        tabs = QTabWidget(dialog)
+        layout.addWidget(tabs, 1)
 
-        password_panel = QFrame(dialog)
-        password_panel.setStyleSheet("QFrame { background-color: #ffffff; border: 1px solid #d8e1ea; border-radius: 8px; }")
-        password_layout = QHBoxLayout(password_panel)
-        password_layout.setContentsMargins(12, 12, 12, 12)
-        password_text = QLabel("Account security: change your password here. Temporary password recovery is handled from this IT area.", password_panel)
+        def make_tab():
+            scroll = QScrollArea(tabs)
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setStyleSheet("QScrollArea { border: none; background: transparent; }")
+            body = QWidget(scroll)
+            body.setStyleSheet("background: transparent;")
+            body_layout = QVBoxLayout(body)
+            body_layout.setContentsMargins(18, 18, 18, 18)
+            body_layout.setSpacing(14)
+            scroll.setWidget(body)
+            return scroll, body_layout
+
+        def make_card(parent, title_text, subtitle_text=""):
+            card = QFrame(parent)
+            card.setStyleSheet("""
+                QFrame {
+                    background-color: #ffffff;
+                    border: 1px solid #d8e1ea;
+                    border-radius: 8px;
+                }
+            """)
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(16, 14, 16, 14)
+            card_layout.setSpacing(10)
+            heading = QLabel(title_text, card)
+            heading.setStyleSheet("font-size: 16px; font-weight: 900; color: #0f172a;")
+            card_layout.addWidget(heading)
+            if subtitle_text:
+                sub = QLabel(subtitle_text, card)
+                sub.setWordWrap(True)
+                sub.setStyleSheet("font-size: 12px; color: #64748b;")
+                card_layout.addWidget(sub)
+            return card, card_layout
+
+        def make_metric(parent, label_text, value_text):
+            metric = QFrame(parent)
+            metric.setStyleSheet("""
+                QFrame {
+                    background-color: #eef7f5;
+                    border: 1px solid #c7dfda;
+                    border-radius: 8px;
+                }
+            """)
+            metric_layout = QVBoxLayout(metric)
+            metric_layout.setContentsMargins(12, 10, 12, 10)
+            label = QLabel(label_text, metric)
+            label.setStyleSheet("font-size: 11px; color: #64748b; font-weight: 900;")
+            value = QLabel(value_text, metric)
+            value.setWordWrap(True)
+            value.setStyleSheet("font-size: 15px; color: #0f172a; font-weight: 900;")
+            metric_layout.addWidget(label)
+            metric_layout.addWidget(value)
+            return metric
+
+        def field_with_label(parent, label_text, widget):
+            box = QVBoxLayout()
+            label = QLabel(label_text, parent)
+            label.setStyleSheet(self.label_style())
+            box.addWidget(label)
+            box.addWidget(widget)
+            return box
+
+        account_tab, account_layout = make_tab()
+        account_card, account_card_layout = make_card(
+            account_tab,
+            "Account Security",
+            "Keep your own IT Admin password current. Temporary password recovery is handled from the User Access tab."
+        )
+        account_metrics = QHBoxLayout()
+        account_metrics.addWidget(make_metric(account_card, "SIGNED IN", self.current_user.get("username", "admin")))
+        account_metrics.addWidget(make_metric(account_card, "ROLE", self.role_label()))
+        account_metrics.addWidget(make_metric(account_card, "DATA SOURCE", "Raspberry Pi Control Service" if self.server_mode else "Local demo database"))
+        account_card_layout.addLayout(account_metrics)
+
+        password_text = QLabel(
+            "For safety, password changes are immediate. If an IT Admin loses access, recovery should be issued by another authorized IT/Admin account.",
+            account_card,
+        )
         password_text.setWordWrap(True)
         password_text.setStyleSheet("font-size: 12px; color: #334155;")
-        password_layout.addWidget(password_text)
-        change_password_btn = QPushButton("Change My Password", password_panel)
+        account_card_layout.addWidget(password_text)
+        change_password_btn = QPushButton("Change My Password", account_card)
         change_password_btn.setStyleSheet(self.primary_btn_style())
-        password_layout.addWidget(change_password_btn)
-        body_layout.addWidget(password_panel)
+        account_card_layout.addWidget(change_password_btn)
+        account_layout.addWidget(account_card)
+        account_layout.addStretch(1)
+        tabs.addTab(account_tab, "Account Security")
 
-        users_table = QTableWidget(dialog)
+        users_tab, users_layout = make_tab()
+        users_card, users_card_layout = make_card(
+            users_tab,
+            "User Access",
+            "Create users, assign roles, and deactivate accounts without deleting audit history."
+        )
+
+        users_table = QTableWidget(users_card)
         users_table.setColumnCount(5)
         users_table.setHorizontalHeaderLabels(["Username", "Role", "Active", "Must Change Password", "Created"])
         users_table.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
         users_table.verticalHeader().setVisible(False)
         users_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
         users_table.setStyleSheet(self.table_style())
-        users_table.setMinimumHeight(190)
-        body_layout.addWidget(users_table)
+        users_table.setMinimumHeight(290)
+        users_card_layout.addWidget(users_table)
 
-        status_panel = QFrame(dialog)
-        status_panel.setStyleSheet("QFrame { background-color: #ffffff; border: 1px solid #d8e1ea; border-radius: 8px; }")
+        status_panel = QFrame(users_card)
+        status_panel.setStyleSheet("QFrame { background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; }")
         status_layout = QHBoxLayout(status_panel)
-        status_layout.setContentsMargins(12, 12, 12, 12)
-        status_text = QLabel("Select a user to activate or deactivate access.", status_panel)
+        status_layout.setContentsMargins(14, 12, 14, 12)
+        status_text = QLabel("Select a user row, then activate or deactivate access.", status_panel)
         status_text.setWordWrap(True)
         status_text.setStyleSheet("font-size: 12px; color: #334155;")
         status_layout.addWidget(status_text)
@@ -5473,7 +5613,7 @@ class DashboardWindow(QWidget):
         deactivate_btn.setStyleSheet(self.secondary_btn_style())
         status_layout.addWidget(activate_btn)
         status_layout.addWidget(deactivate_btn)
-        body_layout.addWidget(status_panel)
+        users_card_layout.addWidget(status_panel)
 
         def load_users():
             auth = AuthService()
@@ -5496,10 +5636,9 @@ class DashboardWindow(QWidget):
                     item.setData(Qt.ItemDataRole.UserRole, row)
                     users_table.setItem(r, c, item)
 
-        load_users()
-
         def selected_settings_user():
-            item = users_table.item(users_table.currentRow(), 0)
+            row = users_table.currentRow()
+            item = users_table.item(row, 0) if row >= 0 else None
             return item.data(Qt.ItemDataRole.UserRole) if item else None
 
         def set_selected_user_status(active):
@@ -5530,36 +5669,44 @@ class DashboardWindow(QWidget):
                 auth.close()
             load_users()
 
-        create_panel = QFrame(dialog)
-        create_panel.setStyleSheet("QFrame { background-color: #ffffff; border: 1px solid #d8e1ea; border-radius: 8px; }")
-        create_layout = QHBoxLayout(create_panel)
-        create_layout.setContentsMargins(12, 12, 12, 12)
+        create_panel = QFrame(users_card)
+        create_panel.setStyleSheet("QFrame { background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 8px; }")
+        create_layout = QVBoxLayout(create_panel)
+        create_layout.setContentsMargins(14, 12, 14, 12)
+        create_title = QLabel("Create New User", create_panel)
+        create_title.setStyleSheet("font-size: 13px; color: #0f172a; font-weight: 900;")
+        create_layout.addWidget(create_title)
+        create_row = QHBoxLayout()
 
         username_edit = QLineEdit(create_panel)
         username_edit.setPlaceholderText("New username")
         username_edit.setStyleSheet(self.input_style())
-        create_layout.addWidget(username_edit)
+        create_row.addWidget(username_edit)
 
         password_edit = QLineEdit(create_panel)
         password_edit.setPlaceholderText("Temporary password")
         password_edit.setEchoMode(QLineEdit.EchoMode.Password)
         password_edit.setStyleSheet(self.input_style())
-        create_layout.addWidget(password_edit)
+        create_row.addWidget(password_edit)
 
         role_combo = QComboBox(create_panel)
         for role in ["NURSE_ADMIN", "IT_ADMIN", "NURSE", "VERIFIER"]:
             role_combo.addItem(self.role_label(role), role)
         role_combo.setStyleSheet(self.input_style())
-        create_layout.addWidget(role_combo)
+        create_row.addWidget(role_combo)
 
         create_btn = QPushButton("Create User", create_panel)
         create_btn.setStyleSheet(self.primary_btn_style())
-        create_layout.addWidget(create_btn)
-        body_layout.addWidget(create_panel)
+        create_row.addWidget(create_btn)
+        create_layout.addLayout(create_row)
+        users_card_layout.addWidget(create_panel)
 
         def create_user():
             if not self.is_it_admin():
                 self.show_error("Permission Required", "Only IT admins can create users.")
+                return
+            if not username_edit.text().strip() or not password_edit.text():
+                self.show_error("Missing user details", "Enter a username and temporary password.")
                 return
             auth = AuthService()
             try:
@@ -5579,24 +5726,17 @@ class DashboardWindow(QWidget):
         activate_btn.clicked.connect(lambda: set_selected_user_status(True))
         deactivate_btn.clicked.connect(lambda: set_selected_user_status(False))
         change_password_btn.clicked.connect(lambda: self.show_change_password_dialog(force=False))
+        load_users()
+        users_layout.addWidget(users_card)
+        users_layout.addStretch(1)
+        tabs.addTab(users_tab, "User Access")
 
-        integration_panel = QFrame(dialog)
-        integration_panel.setStyleSheet("QFrame { background-color: #ffffff; border: 1px solid #d8e1ea; border-radius: 8px; }")
-        integration_layout = QVBoxLayout(integration_panel)
-        integration_layout.setContentsMargins(14, 14, 14, 14)
-        integration_layout.setSpacing(10)
-
-        integration_title = QLabel("Email and Backup Integrations", integration_panel)
-        integration_title.setStyleSheet("font-size: 16px; font-weight: 800; color: #0f172a;")
-        integration_layout.addWidget(integration_title)
-
-        integration_hint = QLabel(
-            "Saved to the Raspberry Pi Control Service. SMTP powers battery emails. Google Drive backups use an rclone target such as whisperwooddrive:Backups/WhisperwoodDemo.",
-            integration_panel,
+        integrations_tab, integrations_layout = make_tab()
+        integration_panel, integration_layout = make_card(
+            integrations_tab,
+            "Email Delivery",
+            "Saved to the Raspberry Pi Control Service. SMTP powers battery email alerts and test notifications."
         )
-        integration_hint.setWordWrap(True)
-        integration_hint.setStyleSheet("font-size: 12px; color: #64748b;")
-        integration_layout.addWidget(integration_hint)
 
         smtp_row_1 = QHBoxLayout()
         smtp_host = QLineEdit(integration_panel)
@@ -5642,45 +5782,61 @@ class DashboardWindow(QWidget):
         smtp_row_3.addWidget(smtp_from_name, 1)
         integration_layout.addLayout(smtp_row_3)
 
+        integrations_layout.addWidget(integration_panel)
+
+        battery_panel, battery_layout = make_card(
+            integrations_tab,
+            "Battery Notification Recipients",
+            "Choose whether battery alerts send email and list who receives them. Thresholds stay in IT Control Center > Devices."
+        )
         battery_email_row = QHBoxLayout()
-        settings_battery_email_enabled = QCheckBox("Enable battery email alerts", integration_panel)
+        settings_battery_email_enabled = QCheckBox("Enable battery email alerts", battery_panel)
         settings_battery_email_enabled.setStyleSheet(self.checkbox_style())
         battery_email_row.addWidget(settings_battery_email_enabled)
-        battery_recipients = QLineEdit(integration_panel)
+        battery_recipients = QLineEdit(battery_panel)
         battery_recipients.setPlaceholderText("Battery alert recipients, separated by commas")
         battery_recipients.setStyleSheet(self.input_style())
         battery_email_row.addWidget(battery_recipients, 1)
-        integration_layout.addLayout(battery_email_row)
+        battery_layout.addLayout(battery_email_row)
+        integrations_layout.addWidget(battery_panel)
+
+        drive_panel, drive_layout = make_card(
+            integrations_tab,
+            "Google Drive Backups",
+            "Backups are created locally first. Drive upload uses an rclone target such as whisperwooddrive:Backups/WhisperwoodDemo."
+        )
 
         drive_row_1 = QHBoxLayout()
-        gdrive_target = QLineEdit(integration_panel)
+        gdrive_target = QLineEdit(drive_panel)
         gdrive_target.setPlaceholderText("rclone target, for example whisperwooddrive:Backups/WhisperwoodDemo")
         gdrive_target.setStyleSheet(self.input_style())
         drive_row_1.addWidget(gdrive_target, 2)
-        gdrive_folder_link = QLineEdit(integration_panel)
+        gdrive_folder_link = QLineEdit(drive_panel)
         gdrive_folder_link.setPlaceholderText("Google Drive folder link / note")
         gdrive_folder_link.setStyleSheet(self.input_style())
         drive_row_1.addWidget(gdrive_folder_link, 1)
-        integration_layout.addLayout(drive_row_1)
+        drive_layout.addLayout(drive_row_1)
 
         drive_row_2 = QHBoxLayout()
-        gdrive_service_account_path = QLineEdit(integration_panel)
+        gdrive_service_account_path = QLineEdit(drive_panel)
         gdrive_service_account_path.setPlaceholderText("Optional service-account JSON path on Pi")
         gdrive_service_account_path.setStyleSheet(self.input_style())
         drive_row_2.addWidget(gdrive_service_account_path, 1)
-        save_integrations_btn = QPushButton("Save Integrations", integration_panel)
+        save_integrations_btn = QPushButton("Save Integrations", drive_panel)
         save_integrations_btn.setStyleSheet(self.primary_btn_style())
         drive_row_2.addWidget(save_integrations_btn)
-        test_integration_email_btn = QPushButton("Test Email", integration_panel)
+        test_integration_email_btn = QPushButton("Test Email", drive_panel)
         test_integration_email_btn.setStyleSheet(self.secondary_btn_style())
         drive_row_2.addWidget(test_integration_email_btn)
-        integration_layout.addLayout(drive_row_2)
+        drive_layout.addLayout(drive_row_2)
 
-        integration_status = QLabel("Load settings from the Raspberry Pi, edit, then save.", integration_panel)
+        integration_status = QLabel("Load settings from the Raspberry Pi, edit, then save.", drive_panel)
         integration_status.setWordWrap(True)
         integration_status.setStyleSheet("font-size: 12px; color: #64748b; font-weight: 700;")
-        integration_layout.addWidget(integration_status)
-        body_layout.addWidget(integration_panel)
+        drive_layout.addWidget(integration_status)
+        integrations_layout.addWidget(drive_panel)
+        integrations_layout.addStretch(1)
+        tabs.addTab(integrations_tab, "Integrations")
 
         def parse_settings_emails(text):
             values = []
@@ -5799,10 +5955,15 @@ class DashboardWindow(QWidget):
         test_integration_email_btn.clicked.connect(test_integration_email)
         load_integration_settings()
 
+        footer = QHBoxLayout()
+        footer_note = QLabel("Settings changes are audited where backend support is available.", dialog)
+        footer_note.setStyleSheet("font-size: 12px; color: #64748b;")
+        footer.addWidget(footer_note, 1)
         close_btn = QPushButton("Close", dialog)
         close_btn.setStyleSheet(self.primary_btn_style())
         close_btn.clicked.connect(dialog.accept)
-        layout.addWidget(close_btn)
+        footer.addWidget(close_btn)
+        layout.addLayout(footer)
         dialog.exec()
 
     def apply_resident_row_to_form(self, row):
