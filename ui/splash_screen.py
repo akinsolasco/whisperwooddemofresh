@@ -1,4 +1,5 @@
 from PyQt6 import QtCore, QtGui, QtWidgets
+import time
 
 from config import APP_NAME, APP_VERSION, ASSETS_DIR
 from core.updater import UpdaterService
@@ -45,7 +46,7 @@ class UpdateWorker(QtCore.QObject):
     @QtCore.pyqtSlot()
     def run(self):
         try:
-            self.status.emit("Checking for updates...")
+            self.status.emit("Checking app version...")
             result = self.updater.check_for_updates()
 
             if not result.get("enabled", True):
@@ -63,7 +64,7 @@ class UpdateWorker(QtCore.QObject):
                 return
 
             if not result.get("has_update"):
-                self.finished.emit({"action": "continue", "message": result.get("message") or "Application is up to date"})
+                self.finished.emit({"action": "continue", "message": result.get("message") or "App is up to date"})
                 return
 
             source = result.get("source") or "update service"
@@ -98,13 +99,14 @@ class SplashScreen(QtWidgets.QWidget):
         self.message_index = 0
         self.update_checked = False
         self.update_in_progress = False
+        self.ready_hold_until = 0.0
         self.loading_base_text = "Starting"
         self.updater = UpdaterService()
 
         self.messages = [
             "Initializing secure environment",
             "Loading resident management tools",
-            "Checking application updates",
+            "Confirming installed app version",
             "Preparing login interface"
         ]
 
@@ -243,6 +245,9 @@ class SplashScreen(QtWidgets.QWidget):
         self.percent.setText(f"{self.progress_value}%")
 
         if self.progress_value >= 100 and not self.update_in_progress:
+            if self.ready_hold_until and time.monotonic() < self.ready_hold_until:
+                self.progress_value = 100
+                return
             self.dot_timer.stop()
             self.progress_timer.stop()
             self.loading_label.setText("Ready")
@@ -250,8 +255,8 @@ class SplashScreen(QtWidgets.QWidget):
 
     def start_update_check(self):
         self.update_in_progress = True
-        self.loading_base_text = "Checking"
-        self.boot_log.setText("Checking for updates...")
+        self.loading_base_text = "Checking version"
+        self.boot_log.setText("Checking app version...")
 
         self.update_thread = QtCore.QThread(self)
         self.update_worker = UpdateWorker(self.updater)
@@ -272,7 +277,7 @@ class SplashScreen(QtWidgets.QWidget):
         elif "install" in lowered:
             self.loading_base_text = "Installing update"
         else:
-            self.loading_base_text = "Checking"
+            self.loading_base_text = "Checking version"
 
     def handle_update_finished(self, result: dict):
         if result.get("action") in {"quit", "handoff"}:
@@ -287,8 +292,14 @@ class SplashScreen(QtWidgets.QWidget):
             return
 
         self.update_in_progress = False
-        self.loading_base_text = "Starting"
-        self.boot_log.setText(result.get("message") or "Update check finished")
+        message = result.get("message") or "Version check finished"
+        if "up to date" in message.lower():
+            self.subtitle.setText("Application is up to date")
+            self.loading_base_text = "Up to date"
+            self.ready_hold_until = time.monotonic() + 1.1
+        else:
+            self.loading_base_text = "Starting"
+        self.boot_log.setText(message)
 
     def finish(self):
         self.finished.emit()
