@@ -197,15 +197,9 @@ class UpdaterService:
     def check_for_updates(self, latest_version=None):
         pending = self.pending_install_state()
         if pending:
-            target_version = pending.get("target_version") or "latest"
-            return {
-                "enabled": True,
-                "has_update": False,
-                "installing": True,
-                "target_version": target_version,
-                "latest_version": target_version,
-                "message": f"Update to v{target_version} is already installing.",
-            }
+            # If the app is able to start again, do not trap it on an old
+            # "installing" marker. The handoff window owns the install UI.
+            self.clear_update_state()
 
         candidates = []
         errors = []
@@ -329,6 +323,7 @@ $form.Text = "Enhanced Living Whisperwood Update"
 $form.StartPosition = "CenterScreen"
 $form.Size = New-Object System.Drawing.Size(560, 245)
 $form.FormBorderStyle = "FixedDialog"
+$form.ControlBox = $false
 $form.MaximizeBox = $false
 $form.MinimizeBox = $false
 $form.TopMost = $true
@@ -370,6 +365,7 @@ $form.Controls.Add($detail)
 
 $script:tickCount = 0
 $script:installerProcess = $null
+$script:finished = $false
 $timer = New-Object System.Windows.Forms.Timer
 $timer.Interval = 700
 $timer.Add_Tick({{
@@ -393,8 +389,17 @@ $timer.Add_Tick({{
         if ((-not $running) -and (Test-Path $target)) {{
             Start-Process $target
         }}
+        $script:finished = $true
         $timer.Stop()
         $form.Close()
+    }}
+}})
+
+$form.Add_FormClosing({{
+    param($sender, $eventArgs)
+    if (-not $script:finished) {{
+        $eventArgs.Cancel = $true
+        $detail.Text = "Please wait while the update finishes..."
     }}
 }})
 
