@@ -1,6 +1,7 @@
 import json
 import os
 from datetime import datetime
+from core.time_utils import format_readable_datetime
 from typing import Any, Dict, List, Optional
 
 from core.app_settings import AppSettingsStore
@@ -523,6 +524,4 @@ class ServerDataService:
 
     @staticmethod
     def format_timestamp(value):
-        if isinstance(value, datetime):
-            return value.strftime("%Y-%m-%d %H:%M:%S")
-        return str(value or "")
+        return format_readable_datetime(value)

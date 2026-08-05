@@ -19,6 +19,7 @@ from config import (
     RELEASE_TAG_PREFIX,
     UPDATE_DOWNLOAD_DIR,
 )
+from core.time_utils import format_local_now, format_readable_datetime
 
 
 class UpdaterService:
@@ -104,6 +105,7 @@ class UpdaterService:
             "download_url": download_url,
             "release_url": release_url,
             "source": source,
+            "checked_at": format_local_now(),
             "message": f"Update available from {source}" if has_update else "App is up to date",
         }
 
@@ -176,12 +178,18 @@ class UpdaterService:
                 asset_name = data.get("asset_name") or INSTALLER_NAME
                 if not tag_name:
                     continue
-                return self.update_result(
+                result = self.update_result(
                     "Raspberry Pi download site",
                     tag_name,
                     f"{base_url}/{asset_name}",
                     data.get("release_url") or "",
                 )
+                reliable_time = data.get("release_published_at") or data.get("generated_at")
+                result["pi_generated_at"] = data.get("generated_at") or ""
+                result["release_published_at"] = data.get("release_published_at") or ""
+                result["remote_time_readable"] = format_readable_datetime(reliable_time)
+                result["display_checked_at"] = result["checked_at"]
+                return result
             except Exception:
                 continue
         return None

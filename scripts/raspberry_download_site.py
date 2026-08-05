@@ -44,6 +44,7 @@ class ReleaseAsset:
     tag_name: str
     release_name: str
     release_url: str
+    release_published_at: str
     asset_name: str
     asset_url: str
     asset_size: int
@@ -51,6 +52,22 @@ class ReleaseAsset:
 
 def utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def readable_utc_datetime(value: str) -> str:
+    text = str(value or "").strip()
+    if not text:
+        return "Not reported"
+    try:
+        if text.endswith("Z"):
+            text = text[:-1] + "+00:00"
+        dt = datetime.fromisoformat(text)
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(timezone.utc)
+        hour = dt.strftime("%I").lstrip("0") or "12"
+        return f"{dt.strftime('%a')}, {dt.strftime('%b')} {dt.day}, {dt.year} {hour}:{dt.strftime('%M')} {dt.strftime('%p')} UTC"
+    except Exception:
+        return str(value or "")
 
 
 def request_json(url: str, timeout: float) -> dict:
@@ -72,6 +89,7 @@ def latest_release_asset(repo: str, preferred_asset: str, timeout: float) -> Rel
         tag_name=str(data.get("tag_name") or ""),
         release_name=str(data.get("name") or data.get("tag_name") or ""),
         release_url=str(data.get("html_url") or ""),
+        release_published_at=str(data.get("published_at") or ""),
         asset_name=str(asset.get("name") or preferred_asset),
         asset_url=str(asset.get("browser_download_url") or ""),
         asset_size=int(asset.get("size") or 0),
@@ -99,6 +117,7 @@ def write_metadata(path: Path, release: ReleaseAsset, installer_path: Path) -> N
         "tag_name": release.tag_name,
         "release_name": release.release_name,
         "release_url": release.release_url,
+        "release_published_at": release.release_published_at,
         "asset_name": release.asset_name,
         "asset_url": release.asset_url,
         "asset_size": release.asset_size,
@@ -423,7 +442,7 @@ def render_html(
         f'      <div class="tile"><div class="label">Version</div><div class="value">{tag_name}</div></div>',
         f'      <div class="tile"><div class="label">File</div><div class="value">{asset_label}</div></div>',
         f'      <div class="tile"><div class="label">Size</div><div class="value">{size_label}</div></div>',
-        f'      <div class="tile"><div class="label">Generated</div><div class="value">{generated_at}</div></div>',
+        f'      <div class="tile"><div class="label">Release time</div><div class="value">{generated_at}</div></div>',
         f'      <div class="tile"><div class="label">Release</div><div class="value"><a href="{release_url}">GitHub release</a></div></div>',
         "    </section>",
         '    <p class="small">If the browser warns about a Windows installer, choose keep only when the link came from your trusted Whisperwood network page.</p>',
@@ -479,6 +498,7 @@ def build_static_site(
         "asset_name": asset_name,
         "asset_size": metadata.get("asset_size", public_installer_path.stat().st_size),
         "generated_at": utc_now_iso(),
+        "release_published_at": metadata.get("release_published_at") or "",
     }
     (token_dir / "latest.json").write_text(json.dumps(metadata_public, indent=2), encoding="utf-8")
 
@@ -486,7 +506,7 @@ def build_static_site(
     release_url = html.escape(str(metadata_public["release_url"] or "#"))
     asset_label = html.escape(asset_name)
     size_label = html.escape(file_size_label(int(metadata_public.get("asset_size") or 0)))
-    generated_at = html.escape(metadata_public["generated_at"])
+    generated_at = html.escape(readable_utc_datetime(metadata_public.get("release_published_at") or metadata_public["generated_at"]))
     installer_href = html.escape(asset_name, quote=True)
     page_url = build_url(scheme, public_host, port, site_path)
     direct_url = build_url(scheme, public_host, port, site_path, asset_name)

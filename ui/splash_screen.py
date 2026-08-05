@@ -68,7 +68,9 @@ class UpdateWorker(QtCore.QObject):
 
             source = result.get("source") or "update service"
             version = result.get("latest_version") or "latest"
-            self.status.emit(f"Downloading v{version} from {source}...")
+            checked_at = result.get("display_checked_at") or result.get("checked_at") or ""
+            suffix = f" Checked {checked_at}." if checked_at else ""
+            self.status.emit(f"Downloading v{version} from {source}.{suffix}")
             download = self.updater.download_update(result)
 
             if not download.get("success"):

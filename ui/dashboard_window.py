@@ -27,6 +27,7 @@ from core.gateway_client import GatewayClient
 from core.models import HighlightRule, auto_fg_for_bg, PALETTE, SECTIONS
 from core.server_data_service import ServerDataService
 from core.server_gateway_client import ServerGatewayClient
+from core.time_utils import format_elapsed_seconds, format_local_now
 
 
 class DashboardWindow(QWidget):
@@ -3390,7 +3391,7 @@ class DashboardWindow(QWidget):
         self.update_control_network_labels(result)
         if hasattr(self, "control_dashboard_labels"):
             self.control_dashboard_labels["service"].setText(self.control_status_text(result))
-            self.control_dashboard_labels["refreshed"].setText(time.strftime("%Y-%m-%d %H:%M:%S"))
+            self.control_dashboard_labels["refreshed"].setText(format_local_now())
         self.load_control_services()
 
     def refresh_all(self):
@@ -3624,7 +3625,7 @@ class DashboardWindow(QWidget):
                 "Online" if d.get("is_online") else "Offline",
                 self.battery_display_text(d, compact=True),
                 ("Assigned" if d.get("resident_name") else "Unassigned") if self.is_it_admin() else (d.get("resident_name") or "Unassigned"),
-                str(d.get("last_seen_s") or ""),
+                format_elapsed_seconds(d.get("last_seen_s")),
             ]
             for c, value in enumerate(values):
                 self.overview_device_table.setItem(r, c, QTableWidgetItem(str(value)))
@@ -4529,7 +4530,7 @@ class DashboardWindow(QWidget):
         self.control_dashboard_labels["memory"].setText(self.control_percent_value(system, "memory_percent", "memory_usage", "memory"))
         self.control_dashboard_labels["disk"].setText(self.control_percent_value(system, "disk_percent", "disk_usage", "disk"))
         self.control_dashboard_labels["operation"].setText(self.control_value(operation, "status", default=self.control_status_text(results["operation"])))
-        self.control_dashboard_labels["refreshed"].setText(time.strftime("%Y-%m-%d %H:%M:%S"))
+        self.control_dashboard_labels["refreshed"].setText(format_local_now())
         self.update_control_network_labels(health)
         self.update_control_header(health)
         self.load_control_services()
@@ -4587,7 +4588,7 @@ class DashboardWindow(QWidget):
                 d.get("fw") or "",
                 self.battery_display_text(d),
                 self.power_state_text(d),
-                str(d.get("last_seen_s") or ""),
+                format_elapsed_seconds(d.get("last_seen_s")),
             ]
             for c, value in enumerate(values):
                 self.it_device_table.setItem(r, c, QTableWidgetItem(str(value)))
